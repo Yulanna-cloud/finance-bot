@@ -142,7 +142,7 @@ def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     if not api_key:
         return ""
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content([
             {
                 "parts": [
@@ -170,7 +170,7 @@ def read_receipt_image(image_bytes: bytes) -> dict:
     if not api_key:
         return {"ошибка": "нет API ключа", "позиции": []}
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         image_part = {"mime_type": "image/jpeg", "data": base64.b64encode(image_bytes).decode()}
         prompt = """Прочитай чек, верни ТОЛЬКО JSON:
 {"магазин":"название","дата":"дата","итого":сумма,"позиции":[{"название":"товар","сумма":число,"категория":"Продукты","подкатегория":"молочка"}]}
@@ -187,7 +187,7 @@ def parse_bank_statement(text: str) -> list:
     if not api_key:
         return []
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         prompt = f"""Разбери выписку, верни ТОЛЬКО JSON массив:
 [{{"дата":"DD.MM.YYYY","сумма":число,"тип":"расход/доход","категория":"...","магазин":"...","описание":"...","уверенность":0.8}}]
 Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Одежда, Развлечения, Подписки, Доход, Прочее
