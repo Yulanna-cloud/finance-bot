@@ -1,9 +1,5 @@
-FROM python:3.10
-
+FROM python:3.11
 WORKDIR /app
-
 COPY . .
-
-RUN pip install --no-cache-dir -r finance_bot/requirements.txt
-
-CMD ["python", "finance_bot/main.py"]
+RUN pip install --no-cache-dir -r requirements.txt
+CMD ["python", "bot.py"]
