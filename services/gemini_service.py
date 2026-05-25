@@ -93,7 +93,7 @@ def classify_text(text: str) -> dict:
 }}"""
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content(prompt)
         raw = response.text.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(raw)
@@ -114,88 +114,4 @@ def get_subcat(category: str, text_lower: str) -> str:
             "бытовая химия": ["порошок", "мыло", "шампунь", "гель"],
         },
         "Кафе": {
-            "кофе": ["кофе", "капучино", "латте", "эспрессо"],
-            "фастфуд": ["бургер", "kfc", "вкусно", "шаверма"],
-            "рестораны": ["ресторан", "суши", "пицца"],
-        },
-        "Транспорт": {
-            "бензин": ["бензин", "заправка", "лукойл", "роснефть", "азс"],
-            "такси": ["такси", "uber", "яндекс go", "яндекс го"],
-            "метро": ["метро", "автобус", "проездной"],
-        },
-    }
-    if category in subcats:
-        for subcat, words in subcats[category].items():
-            if any(w in text_lower for w in words):
-                return subcat
-    return ""
-
-
-def _default(text, amount, op_type):
-    return {
-        "тип": op_type, "сумма": amount, "категория": "Прочее",
-        "подкатегория": "", "магазин": "", "описание": text, "уверенность": 0.3
-    }
-
-
-def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    if not api_key:
-        return ""
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content([
-            {
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": base64.b64encode(audio_bytes).decode("utf-8")
-                        }
-                    },
-                    {
-                        "text": "Расшифруй это голосовое сообщение на русском языке. Верни ТОЛЬКО текст, без пояснений и комментариев."
-                    }
-                ]
-            }
-        ])
-        text = response.text.strip()
-        logger.info(f"Расшифровка голоса: {text}")
-        return text
-    except Exception as e:
-        logger.error(f"Ошибка голоса: {e}")
-        return ""
-
-
-def read_receipt_image(image_bytes: bytes) -> dict:
-    if not api_key:
-        return {"ошибка": "нет API ключа", "позиции": []}
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        image_part = {"mime_type": "image/jpeg", "data": base64.b64encode(image_bytes).decode()}
-        prompt = """Прочитай чек, верни ТОЛЬКО JSON:
-{"магазин":"название","дата":"дата","итого":сумма,"позиции":[{"название":"товар","сумма":число,"категория":"Продукты","подкатегория":"молочка"}]}
-Молоко→молочка, Порошок/мыло→бытовая химия, Хлеб→хлеб, Мясо→мясо"""
-        response = model.generate_content([prompt, image_part])
-        raw = response.text.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
-    except Exception as e:
-        logger.error(f"Ошибка чека: {e}")
-        return {"ошибка": str(e), "позиции": []}
-
-
-def parse_bank_statement(text: str) -> list:
-    if not api_key:
-        return []
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        prompt = f"""Разбери выписку, верни ТОЛЬКО JSON массив:
-[{{"дата":"DD.MM.YYYY","сумма":число,"тип":"расход/доход","категория":"...","магазин":"...","описание":"...","уверенность":0.8}}]
-Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Одежда, Развлечения, Подписки, Доход, Прочее
-Выписка:
-{text[:4000]}"""
-        response = model.generate_content(prompt)
-        raw = response.text.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
-    except Exception as e:
-        logger.error(f"Ошибка выписки: {e}")
-        return []
+            "кофе": ["кофе", "кап
