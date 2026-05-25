@@ -59,9 +59,8 @@ def main():
 
     # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("помощь", help_command))
-    app.add_handler(CommandHandler("отчет", handle_report))
-    app.add_handler(CommandHandler("отчёт", handle_report))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("otchet", handle_report))
 
     # Сообщения
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
