@@ -3,6 +3,7 @@
 Примеры: "кофе 350", "такси 300", "Пятерочка 1450", "зарплата 85000"
 """
 
+import re
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -10,6 +11,25 @@ from services.gemini_service import classify_text
 from services.sheets_service import write_operation
 
 logger = logging.getLogger(__name__)
+
+
+def extract_amount(text: str):
+    """Извлекает сумму из текста напрямую — запасной вариант если Gemini не справился."""
+    patterns = [
+        r'(\d[\d\s]*[\d])[,.](\d{2})\b',
+        r'\b(\d[\d\s]{0,6}\d)\b',
+        r'\b(\d+)\b',
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            raw = matches[-1] if isinstance(matches[-1], str) else matches[-1][0]
+            clean = raw.replace(" ", "").replace(",", ".")
+            try:
+                return float(clean)
+            except ValueError:
+                continue
+    return None
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -23,9 +43,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = classify_text(text)
 
         if not result.get("сумма"):
+            amount = extract_amount(text)
+            if amount:
+                result["сумма"] = amount
+
+        if result.get("сумма") is not None:
+            try:
+                result["сумма"] = float(str(result["сумма"]).replace(",", ".").replace(" ", ""))
+            except (ValueError, TypeError):
+                result["сумма"] = None
+
+        if not result.get("сумма"):
             await update.message.reply_text(
                 "🤔 Не смогла найти сумму в сообщении.\n"
-                "Попробуй написать так: *кофе 350* или *такси 300 рублей*",
+                "Попробуй написать так: *кофе 350* или *такси 300*",
                 parse_mode="Markdown"
             )
             return
@@ -45,7 +76,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text(
                 f"{emoji} Записано!\n\n"
-                f"💰 *{result['сумма']} ₽*\n"
+                f"💰 *{result['сумма']:.0f} ₽*\n"
                 f"📂 {cat}{subcat_str}{store_str}\n"
                 f"📝 {result.get('описание', text)}"
                 f"{warning}",
@@ -53,11 +84,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await update.message.reply_text(
-                "❌ Не удалось записать в таблицу. Проверь настройки Google Sheets."
+                "❌ Не удалось записать в таблицу.\n"
+                "Проверь что бот добавлен как редактор в Google Таблицу."
             )
 
     except Exception as e:
         logger.error(f"Ошибка handle_text: {e}")
-        await update.message.reply_text(
-            "❌ Что-то пошло не так. Попробуй ещё раз."
-        )
+        await update.message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
