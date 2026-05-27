@@ -142,21 +142,16 @@ def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     if not api_key:
         return ""
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content([
-            {
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": base64.b64encode(audio_bytes).decode("utf-8")
-                        }
-                    },
-                    {
-                        "text": "Расшифруй это голосовое сообщение на русском языке. Верни ТОЛЬКО текст, без пояснений и комментариев."
-                    }
-                ]
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        audio_part = {
+            "inline_data": {
+                "mime_type": "audio/ogg",
+                "data": base64.b64encode(audio_bytes).decode("utf-8")
             }
+        }
+        response = model.generate_content([
+            audio_part,
+            "Расшифруй это голосовое сообщение на русском языке. Верни ТОЛЬКО текст, без пояснений и комментариев."
         ])
         text = response.text.strip()
         logger.info(f"Расшифровка голоса: {text}")
