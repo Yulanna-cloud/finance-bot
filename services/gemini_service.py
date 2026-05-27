@@ -3,13 +3,15 @@ import json
 import logging
 import re
 import base64
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
 api_key = os.getenv("GEMINI_API_KEY")
+client = None
 if api_key:
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 else:
     logger.error("GEMINI_API_KEY не найден!")
 
@@ -71,7 +73,7 @@ def classify_text(text: str) -> dict:
                     "уверенность": 0.95
                 }
 
-    if not api_key:
+    if not client:
         return _default(text, amount, op_type)
 
     prompt = f"""Ты помощник для учёта финансов. Верни ТОЛЬКО JSON без markdown.
@@ -93,8 +95,10 @@ def classify_text(text: str) -> dict:
 }}"""
 
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
         raw = response.text.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(raw)
         if not result.get("сумма") and amount:
@@ -139,20 +143,16 @@ def _default(text, amount, op_type):
 
 
 def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    if not api_key:
+    if not client:
         return ""
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash-lite")
-        audio_part = {
-            "inline_data": {
-                "mime_type": "audio/ogg",
-                "data": base64.b64encode(audio_bytes).decode("utf-8")
-            }
-        }
-        response = model.generate_content([
-            audio_part,
-            "Расшифруй это голосовое сообщение на русском языке. Верни ТОЛЬКО текст, без пояснений."
-        ])
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
+                "Расшифруй это голосовое сообщение на русском языке. Верни ТОЛЬКО текст, без пояснений."
+            ]
+        )
         text = response.text.strip()
         logger.info(f"Расшифровка голоса: {text}")
         return text
@@ -162,15 +162,19 @@ def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
 
 
 def read_receipt_image(image_bytes: bytes) -> dict:
-    if not api_key:
+    if not client:
         return {"ошибка": "нет API ключа", "позиции": []}
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        image_part = {"mime_type": "image/jpeg", "data": base64.b64encode(image_bytes).decode()}
         prompt = """Прочитай чек, верни ТОЛЬКО JSON:
 {"магазин":"название","дата":"дата","итого":сумма,"позиции":[{"название":"товар","сумма":число,"категория":"Продукты","подкатегория":"молочка"}]}
 Молоко→молочка, Порошок/мыло→бытовая химия, Хлеб→хлеб, Мясо→мясо"""
-        response = model.generate_content([prompt, image_part])
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                prompt
+            ]
+        )
         raw = response.text.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(raw)
     except Exception as e:
@@ -179,16 +183,18 @@ def read_receipt_image(image_bytes: bytes) -> dict:
 
 
 def parse_bank_statement(text: str) -> list:
-    if not api_key:
+    if not client:
         return []
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
         prompt = f"""Разбери выписку, верни ТОЛЬКО JSON массив:
 [{{"дата":"DD.MM.YYYY","сумма":число,"тип":"расход/доход","категория":"...","магазин":"...","описание":"...","уверенность":0.8}}]
 Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Одежда, Развлечения, Подписки, Доход, Прочее
 Выписка:
 {text[:4000]}"""
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
         raw = response.text.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(raw)
     except Exception as e:
