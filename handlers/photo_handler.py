@@ -1,8 +1,7 @@
 """
 Обработчик фото чеков.
-Скачивает фото → Gemini читает все позиции → каждую записывает отдельно.
+Читает чек → группирует по категориям → записывает суммарно.
 """
-
 import logging
 import io
 from telegram import Update
@@ -17,7 +16,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📷 Читаю чек...")
 
     try:
-        # Берём фото в максимальном качестве
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
 
@@ -25,7 +23,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_memory(buf)
         image_bytes = buf.getvalue()
 
-        # Читаем чек через Gemini Vision
         receipt_data = read_receipt_image(image_bytes)
 
         if "ошибка" in receipt_data:
@@ -35,55 +32,64 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        positions = receipt_data.get("позиции", [])
         store = receipt_data.get("магазин", "")
         total = receipt_data.get("итого", 0)
         date = receipt_data.get("дата")
 
-        if not positions:
+        # Новый формат — категории с суммами
+        categories = receipt_data.get("категории", [])
+
+        # Запасной вариант — старый формат с позициями
+        if not categories:
+            positions = receipt_data.get("позиции", [])
+            if positions:
+                # Группируем позиции по категориям
+                cat_sums = {}
+                for pos in positions:
+                    cat = pos.get("категория", "Продукты")
+                    cat_sums[cat] = cat_sums.get(cat, 0) + float(pos.get("сумма", 0))
+                categories = [{"категория": k, "сумма": v} for k, v in cat_sums.items()]
+
+        if not categories:
             await update.message.reply_text(
                 "🤔 Не нашла позиции в чеке. "
                 "Попробуй сфотографировать полный чек с позициями."
             )
             return
 
-        # Формируем превью для пользователя
         store_str = f"🏪 *{store}*\n" if store else ""
         lines = [f"📷 Чек прочитан!\n\n{store_str}"]
 
         operations = []
-        for pos in positions:
-            name = pos.get("название", "")
-            amount = pos.get("сумма", 0)
-            cat = pos.get("категория", "Продукты")
-            subcat = pos.get("подкатегория", "")
-            subcat_str = f" / {subcat}" if subcat else ""
+        for item in categories:
+            cat = item.get("категория", "Прочее")
+            amount = float(item.get("сумма", 0))
+            if amount <= 0:
+                continue
 
-            lines.append(f"• {name} — *{amount} ₽* ({cat}{subcat_str})")
+            lines.append(f"• {cat} — *{amount:.0f} ₽*")
 
             operations.append({
                 "сумма": amount,
                 "тип": "расход",
                 "категория": cat,
-                "подкатегория": subcat,
+                "подкатегория": "",
                 "магазин": store,
-                "описание": name,
+                "описание": f"{store} / {cat}" if store else cat,
                 "дата": date,
                 "уверенность": 0.9,
-                "исходный_текст": f"чек: {name}",
+                "исходный_текст": f"чек: {cat}",
             })
 
         if total:
-            lines.append(f"\n💰 *Итого: {total} ₽*")
-
+            lines.append(f"\n💰 *Итого: {total:.0f} ₽*")
         lines.append(f"\n✅ Записываю {len(operations)} позиций...")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-        # Записываем все позиции в таблицу
         ok, errors = write_operations_batch(operations, source="чек")
 
-        result_msg = f"✅ Записано {ok} позиций в таблицу!"
+        result_msg = f"✅ Записано {ok} категорий в таблицу!"
         if errors:
             result_msg += f"\n⚠️ {errors} позиций не записалось — проверь подключение."
 
