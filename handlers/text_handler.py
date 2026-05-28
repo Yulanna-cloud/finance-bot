@@ -2,7 +2,6 @@
 Обработчик текстовых сообщений.
 Примеры: "кофе 350", "такси 300", "Пятерочка 1450", "зарплата 85000"
 """
-
 import re
 import logging
 from telegram import Update
@@ -14,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 def extract_amount(text: str):
-    """Извлекает сумму из текста напрямую — запасной вариант если Gemini не справился."""
     patterns = [
         r'(\d[\d\s]*[\d])[,.](\d{2})\b',
         r'\b(\d[\d\s]{0,6}\d)\b',
@@ -32,6 +30,40 @@ def extract_amount(text: str):
     return None
 
 
+async def _send_multi(update, result, source):
+    """Записывает несколько позиций из детального ввода."""
+    позиции = result.get("позиции", [])
+    магазин = result.get("магазин", "")
+    тип = result.get("тип", "расход")
+
+    if not позиции:
+        await update.message.reply_text("🤔 Не смогла разобрать позиции.")
+        return
+
+    lines = []
+    total = 0
+    for p in позиции:
+        op = {
+            "тип": тип,
+            "сумма": float(p.get("сумма", 0)),
+            "категория": p.get("категория", "Прочее"),
+            "подкатегория": p.get("подкатегория", ""),
+            "магазин": магазин,
+            "описание": p.get("описание", ""),
+            "уверенность": 0.9
+        }
+        write_operation(op, source=source)
+        total += op["сумма"]
+        lines.append(f"• {op['описание']} — {op['сумма']:.0f} ₽ ({op['категория']})")
+
+    await update.message.reply_text(
+        f"💸 Записано {len(позиции)} позиций!\n\n"
+        + "\n".join(lines)
+        + f"\n\n💰 Итого: *{total:.0f} ₽*",
+        parse_mode="Markdown"
+    )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text:
@@ -41,6 +73,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         result = classify_text(text)
+
+        # Детальный ввод с несколькими позициями
+        if result.get("мультизапись"):
+            await _send_multi(update, result, source="telegram_текст")
+            return
 
         if not result.get("сумма"):
             amount = extract_amount(text)
@@ -73,7 +110,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             store_str = f"\n🏪 {store}" if store else ""
             confidence = result.get("уверенность", 0)
             warning = "\n⚠️ _Низкая уверенность — проверь в таблице_" if confidence < 0.8 else ""
-
             await update.message.reply_text(
                 f"{emoji} Записано!\n\n"
                 f"💰 *{result['сумма']:.0f} ₽*\n"
