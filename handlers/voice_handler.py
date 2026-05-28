@@ -1,8 +1,6 @@
 """
 Обработчик голосовых сообщений.
-Скачивает аудио → Gemini расшифровывает → классифицирует → записывает.
 """
-
 import logging
 import io
 from telegram import Update
@@ -13,22 +11,51 @@ from services.sheets_service import write_operation
 logger = logging.getLogger(__name__)
 
 
+async def _send_multi(update, result, source):
+    """Записывает несколько позиций из детального голосового ввода."""
+    позиции = result.get("позиции", [])
+    магазин = result.get("магазин", "")
+    тип = result.get("тип", "расход")
+
+    if not позиции:
+        await update.message.reply_text("🤔 Не смогла разобрать позиции.")
+        return
+
+    lines = []
+    total = 0
+    for p in позиции:
+        op = {
+            "тип": тип,
+            "сумма": float(p.get("сумма", 0)),
+            "категория": p.get("категория", "Прочее"),
+            "подкатегория": p.get("подкатегория", ""),
+            "магазин": магазин,
+            "описание": p.get("описание", ""),
+            "уверенность": 0.9
+        }
+        write_operation(op, source=source)
+        total += op["сумма"]
+        lines.append(f"• {op['описание']} — {op['сумма']:.0f} ₽ ({op['категория']})")
+
+    await update.message.reply_text(
+        f"💸 Записано {len(позиции)} позиций!\n\n"
+        + "\n".join(lines)
+        + f"\n\n💰 Итого: *{total:.0f} ₽*",
+        parse_mode="Markdown"
+    )
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎤 Слушаю...")
 
     try:
-        # Скачиваем голосовое
         voice = update.message.voice
         file = await context.bot.get_file(voice.file_id)
-
-        # Читаем байты
         buf = io.BytesIO()
         await file.download_to_memory(buf)
         audio_bytes = buf.getvalue()
 
-        # Расшифровываем через Gemini
         transcribed = transcribe_voice(audio_bytes, mime_type="audio/ogg")
-
         if not transcribed:
             await update.message.reply_text(
                 "🤔 Не смогла расшифровать. Попробуй говорить чуть медленнее или напиши текстом."
@@ -37,8 +64,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"📝 Услышала: _{transcribed}_", parse_mode="Markdown")
 
-        # Классифицируем текст
         result = classify_text(transcribed)
+
+        # Детальный ввод с несколькими позициями
+        if result.get("мультизапись"):
+            await _send_multi(update, result, source="голос")
+            return
 
         if not result.get("сумма"):
             await update.message.reply_text(
@@ -59,10 +90,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             store_str = f"\n🏪 {store}" if store else ""
             confidence = result.get("уверенность", 0)
             warning = "\n⚠️ _Низкая уверенность — проверь в таблице_" if confidence < 0.8 else ""
-
             await update.message.reply_text(
                 f"{emoji} Записано!\n\n"
-                f"💰 *{result['сумма']} ₽*\n"
+                f"💰 *{result['сумма']:.0f} ₽*\n"
                 f"📂 {cat}{subcat_str}{store_str}"
                 f"{warning}",
                 parse_mode="Markdown"
