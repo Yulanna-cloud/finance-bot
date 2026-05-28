@@ -124,19 +124,80 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         return False
 
 
+import time
+
 def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
     """
-    Записывает несколько операций (для чеков и выписок).
-    Возвращает (успешно, с ошибками).
+    Записывает несколько операций пакетом — один раз читает таблицу,
+    потом добавляет все строки разом.
     """
-    ok = 0
-    errors = 0
-    for op in operations:
-        if write_operation(op, source):
-            ok += 1
-        else:
-            errors += 1
-    return ok, errors
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
+
+        # Читаем ID один раз
+        all_ids = sheet.col_values(1)
+        op_ids = [x for x in all_ids if str(x).startswith("OP-")]
+        last_num = max((int(x.replace("OP-", "")) for x in op_ids), default=0)
+
+        now = datetime.now()
+        rows = []
+
+        for i, operation in enumerate(operations):
+            last_num += 1
+            op_id = f"OP-{last_num:04d}"
+            group_id = f"G-{last_num:04d}"
+
+            op_date = operation.get("дата") or now.strftime("%d.%m.%Y")
+            op_time = now.strftime("%H:%M")
+            month = now.strftime("%B")
+            year = now.year
+
+            confidence = operation.get("уверенность", 0.8)
+            confirmed = "Нет"
+            status = "обработано" if confidence >= 0.8 else "требует проверки"
+
+            row = [
+                op_id, group_id, op_date, op_time, month, str(year),
+                operation.get("тип", "расход"),
+                operation.get("сумма", ""),
+                "RUB",
+                operation.get("категория", "Прочее"),
+                "",
+                operation.get("подкатегория", ""),
+                operation.get("магазин", ""),
+                operation.get("описание", ""),
+                operation.get("получатель", ""),
+                "карта", "",
+                source,
+                operation.get("исходный_текст", ""),
+                "", "", "",
+                str(confidence),
+                confirmed, status, "groq",
+                now.strftime("%d.%m.%Y %H:%M"),
+            ]
+            rows.append(row)
+
+        # Записываем все строки одним запросом
+        if rows:
+            sheet.append_rows(rows, value_input_option="USER_ENTERED")
+            logger.info(f"Записано {len(rows)} операций пакетом")
+
+        return len(rows), 0
+
+    except Exception as e:
+        logger.error(f"Ошибка пакетной записи: {e}")
+        # Запасной вариант — по одной с задержкой
+        ok = 0
+        errors = 0
+        for op in operations:
+            time.sleep(1)
+            if write_operation(op, source):
+                ok += 1
+            else:
+                errors += 1
+        return ok, errors
 
 
 def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) -> dict:
