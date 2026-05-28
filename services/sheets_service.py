@@ -1,12 +1,11 @@
 """
 Сервис для работы с Google Sheets.
-Записывает операции в лист ОПЕРАЦИИ и ИМПОРТ,
-читает категории, делает отчёт.
 """
 
 import os
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 import gspread
@@ -14,7 +13,6 @@ from google.oauth2.service_account import Credentials
 
 logger = logging.getLogger(__name__)
 
-# ID твоей таблицы (из URL)
 SPREADSHEET_ID = "1vd5uDsilhAx8hrpLf88rBuogJIWIMB2LNs9DoyMMTLQ"
 
 SCOPES = [
@@ -24,32 +22,24 @@ SCOPES = [
 
 
 def get_sheets_client():
-    """Подключается к Google Sheets через Service Account"""
-    # Ключ можно задать как файл или как JSON-строку в переменной окружения
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
     if creds_json:
-        # Из переменной окружения (удобно для Railway)
         creds_dict = json.loads(creds_json)
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     elif os.path.exists(creds_file):
-        # Из файла (удобно при локальном запуске)
         creds = Credentials.from_service_account_file(creds_file, scopes=SCOPES)
     else:
-        raise FileNotFoundError(
-            "Не найдены Google credentials! "
-            "Задай GOOGLE_CREDENTIALS_JSON или положи credentials.json рядом с ботом."
-        )
+        raise FileNotFoundError("Не найдены Google credentials!")
 
     return gspread.authorize(creds)
 
 
 def get_next_op_id(sheet) -> str:
-    """Генерирует следующий ID операции вида OP-XXXX"""
     try:
-        all_ids = sheet.col_values(1)  # Колонка ID
-        op_ids = [x for x in all_ids if x.startswith("OP-")]
+        all_ids = sheet.col_values(1)
+        op_ids = [x for x in all_ids if str(x).startswith("OP-")]
         if not op_ids:
             return "OP-0001"
         last_num = max(int(x.replace("OP-", "")) for x in op_ids)
@@ -59,14 +49,6 @@ def get_next_op_id(sheet) -> str:
 
 
 def write_operation(operation: dict, source: str = "telegram") -> bool:
-    """
-    Записывает одну операцию в лист ОПЕРАЦИИ.
-
-    operation — словарь с ключами:
-        сумма, тип, категория, подкатегория, магазин,
-        описание, уверенность, дата (опционально)
-    source — откуда пришло: голос, чек, выписка, текст
-    """
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -75,7 +57,7 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         now = datetime.now()
         op_date = operation.get("дата") or now.strftime("%d.%m.%Y")
         op_time = now.strftime("%H:%M")
-        month = now.strftime("%B")  # Май, Июнь...
+        month = now.strftime("%B")
         year = now.year
 
         op_id = get_next_op_id(sheet)
@@ -86,33 +68,23 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         status = "обработано" if confidence >= 0.8 else "требует проверки"
 
         row = [
-            op_id,                                    # ID
-            group_id,                                 # Group ID
-            op_date,                                  # Дата
-            op_time,                                  # Время
-            month,                                    # Месяц
-            str(year),                                # Год
-            operation.get("тип", "расход"),          # Тип операции
-            operation.get("сумма", ""),               # Сумма
-            "RUB",                                    # Валюта
-            operation.get("категория", "Прочее"),    # Категория
-            "",                                       # Ручная категория
-            operation.get("подкатегория", ""),       # Подкатегория
-            operation.get("магазин", ""),            # Магазин
-            operation.get("описание", ""),           # Товар/Описание
-            operation.get("получатель", ""),         # Получатель
-            "карта",                                  # Способ оплаты
-            "",                                       # Счет
-            source,                                   # Источник данных
-            operation.get("исходный_текст", ""),     # Исходный текст
-            "",                                       # Комментарий
-            "",                                       # Теги
-            "",                                       # Чек ID
-            str(confidence),                          # AI уверенность
-            confirmed,                                # Подтверждено
-            status,                                   # Статус
-            "gemini",                                 # AI модель
-            now.strftime("%d.%m.%Y %H:%M"),          # Дата создания
+            op_id, group_id, op_date, op_time, month, str(year),
+            operation.get("тип", "расход"),
+            operation.get("сумма", ""),
+            "RUB",
+            operation.get("категория", "Прочее"),
+            "",
+            operation.get("подкатегория", ""),
+            operation.get("магазин", ""),
+            operation.get("описание", ""),
+            operation.get("получатель", ""),
+            "карта", "",
+            source,
+            operation.get("исходный_текст", ""),
+            "", "", "",
+            str(confidence),
+            confirmed, status, "groq",
+            now.strftime("%d.%m.%Y %H:%M"),
         ]
 
         sheet.append_row(row, value_input_option="USER_ENTERED")
@@ -123,8 +95,6 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         logger.error(f"Ошибка записи в Google Sheets: {e}")
         return False
 
-
-import time
 
 def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
     """
@@ -144,7 +114,7 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
         now = datetime.now()
         rows = []
 
-        for i, operation in enumerate(operations):
+        for operation in operations:
             last_num += 1
             op_id = f"OP-{last_num:04d}"
             group_id = f"G-{last_num:04d}"
@@ -155,7 +125,6 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
             year = now.year
 
             confidence = operation.get("уверенность", 0.8)
-            confirmed = "Нет"
             status = "обработано" if confidence >= 0.8 else "требует проверки"
 
             row = [
@@ -174,12 +143,11 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
                 operation.get("исходный_текст", ""),
                 "", "", "",
                 str(confidence),
-                confirmed, status, "groq",
+                "Нет", status, "groq",
                 now.strftime("%d.%m.%Y %H:%M"),
             ]
             rows.append(row)
 
-        # Записываем все строки одним запросом
         if rows:
             sheet.append_rows(rows, value_input_option="USER_ENTERED")
             logger.info(f"Записано {len(rows)} операций пакетом")
@@ -192,7 +160,7 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
         ok = 0
         errors = 0
         for op in operations:
-            time.sleep(1)
+            time.sleep(2)
             if write_operation(op, source):
                 ok += 1
             else:
@@ -201,10 +169,6 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
 
 
 def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) -> dict:
-    """
-    Читает лист ОПЕРАЦИИ и считает отчёт за месяц.
-    Возвращает dict с итогами по категориям.
-    """
     try:
         now = datetime.now()
         target_month = month or now.month
@@ -216,7 +180,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
 
         all_rows = sheet.get_all_records()
 
-        # Названия месяцев для сравнения
         month_names_ru = {
             1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
             5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
@@ -224,19 +187,17 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         }
         target_month_name = month_names_ru[target_month]
 
-        expenses = {}   # категория → сумма
+        expenses = {}
         income = 0.0
         total_expense = 0.0
         count = 0
 
         for row in all_rows:
-            # Фильтр по месяцу — пробуем несколько форматов дат
             row_date = str(row.get("Дата", ""))
             row_month = str(row.get("Месяц", ""))
             row_year = str(row.get("Год", ""))
             row_type = str(row.get("Тип операции", "")).lower()
 
-            # Парсим дату если месяц/год не заполнены
             in_period = False
             if row_month.lower() == target_month_name.lower() and str(target_year) in row_year:
                 in_period = True
@@ -264,6 +225,10 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             if amount <= 0:
                 continue
 
+            # Наличные не считаем
+            if row_type == "наличные":
+                continue
+
             count += 1
             category = str(row.get("Категория", "Прочее") or "Прочее")
 
@@ -273,7 +238,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                 total_expense += amount
                 expenses[category] = expenses.get(category, 0) + amount
 
-        # Топ категорий
         top_categories = sorted(expenses.items(), key=lambda x: x[1], reverse=True)[:5]
 
         return {
