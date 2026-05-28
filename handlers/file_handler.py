@@ -58,14 +58,11 @@ def should_skip(description: str, category: str) -> bool:
 
 
 def classify_sber_operation(row: dict) -> dict | None:
-    """
-    Классифицирует одну операцию из выписки Сбербанка.
-    Возвращает None если операцию нужно пропустить.
-    """
     date = str(row.get("дата", ""))
     category_raw = str(row.get("категория", "")).lower()
     description = str(row.get("описание", ""))
     amount_raw = str(row.get("сумма", "0")).replace(" ", "").replace(",", ".")
+    is_income = row.get("тип") == "доход"
 
     try:
         amount = abs(float(amount_raw))
@@ -75,16 +72,18 @@ def classify_sber_operation(row: dict) -> dict | None:
     if amount <= 0:
         return None
 
-    # Определяем тип операции
-    is_income = "+" in str(row.get("сумма_raw", "")) or row.get("тип") == "доход"
-
-    if should_skip(description, category_raw):
-        return None
-
     desc_lower = description.lower()
 
-    # Наличные — записываем отдельно, не считаем
-    if "наличн" in category_raw or "atm" in desc_lower or "банкомат" in desc_lower:
+    # Пропускаем внутренние переброски
+    if any(s in desc_lower for s in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
+        return None
+
+    # Пропускаем супермаркеты
+    if "супермаркет" in category_raw or any(s in desc_lower for s in SKIP_MERCHANTS):
+        return None
+
+    # Наличные
+    if "наличн" in category_raw or "atm" in desc_lower:
         return {
             "дата": date,
             "сумма": amount,
@@ -93,69 +92,60 @@ def classify_sber_operation(row: dict) -> dict | None:
             "подкатегория": "",
             "магазин": "",
             "описание": "Снятие наличных",
+            "получатель": "",
             "уверенность": 1.0
         }
 
-    # Определяем категорию по имени человека
+    # Определяем получателя/отправителя из описания
+    получатель = ""
+    our_category = None
+    op_type = "доход" if is_income else "расход"
+
     for name, cat in PEOPLE_CATEGORIES.items():
         if name in desc_lower:
-            op_type = "доход" if is_income else "расход"
-            return {
-                "дата": date,
-                "сумма": amount,
-                "тип": op_type,
-                "категория": cat,
-                "подкатегория": "",
-                "магазин": "",
-                "описание": description,
-                "уверенность": 0.95
-            }
-
-    # Доходы
-    if is_income:
-        return {
-            "дата": date,
-            "сумма": amount,
-            "тип": "доход",
-            "категория": "Доход",
-            "подкатегория": "",
-            "магазин": "",
-            "описание": description,
-            "уверенность": 0.85
-        }
-
-    # Категории Сбербанка → наши категории
-    category_map = {
-        "рестораны": "Кафе",
-        "кафе": "Кафе",
-        "одежда": "Одежда",
-        "аксессуары": "Одежда",
-        "дома": "Дом",
-        "транспорт": "Транспорт",
-        "медицин": "Медицина",
-        "аптек": "Медицина",
-        "связь": "Коммуналка",
-        "интернет": "Коммуналка",
-        "жкх": "Коммуналка",
-        "коммунал": "Коммуналка",
-        "перевод": "Переводы",
-    }
-
-    our_category = "Прочее"
-    for key, val in category_map.items():
-        if key in category_raw or key in desc_lower:
-            our_category = val
+            our_category = cat
+            # Извлекаем полное имя из описания
+            # "Перевод для П. Маргарита Алексеевна" → "Маргарита П."
+            name_match = re.search(r'(?:для|от)\s+([А-ЯЁ]\.\s+[А-ЯЁа-яё]+(?:\s+[А-ЯЁа-яё]+)?)', description)
+            if name_match:
+                получатель = name_match.group(1).strip()
             break
+
+    if not our_category:
+        category_map = {
+            "рестораны": "Кафе",
+            "кафе": "Кафе",
+            "одежда": "Одежда",
+            "аксессуары": "Одежда",
+            "дома": "Дом",
+            "транспорт": "Транспорт",
+            "медицин": "Медицина",
+            "аптек": "Медицина",
+            "связь": "Коммуналка",
+            "интернет": "Коммуналка",
+            "жкх": "Коммуналка",
+            "коммунал": "Коммуналка",
+            "перевод": "Переводы",
+            "яндекс": "Подписки",
+        }
+        for key, val in category_map.items():
+            if key in category_raw or key in desc_lower:
+                our_category = val
+                break
+
+    if not our_category:
+        our_category = "Доход" if is_income else "Прочее"
 
     return {
         "дата": date,
         "сумма": amount,
-        "тип": "расход",
+        "тип": op_type,
         "категория": our_category,
         "подкатегория": "",
         "магазин": "",
-        "описание": description,
-        "уверенность": 0.85
+        "описание": description or category_raw,
+        "получатель": получатель,
+        "уверенность": 0.9
     }
 
 
