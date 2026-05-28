@@ -167,6 +167,7 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
+            logger.info(f"PDF текст: {full_text[:3000]}")
 
         operations = []
         lines = full_text.split("\n")
