@@ -150,143 +150,73 @@ def classify_sber_operation(row: dict) -> dict | None:
 
 
 def parse_sber_pdf(pdf_bytes: bytes) -> list:
-    """Парсит PDF выписку Сбербанка."""
+    """Парсит PDF выписку Сбербанка через Groq."""
     try:
         import pypdf
+        from services.gemini_service import groq_client
+
         reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
 
-        operations = []
-        lines = [l.strip() for l in full_text.split("\n") if l.strip()]
+        if not groq_client:
+            logger.error("GROQ_API_KEY не найден")
+            return []
 
-        i = 0
-        while i < len(lines):
-            line = lines[i]
+        prompt = f"""Ты разбираешь банковскую выписку Сбербанка. Верни ТОЛЬКО JSON массив без markdown.
 
-            # Ищем строку с датой и временем: "28.05.2026 06:49 Категория сумма остаток"
-            match = re.match(
-                r'^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+?)\s+([\d\s]+[,]\d{2})\s+([\d\s]+[,]\d{2})\s*$',
-                line
-            )
-            if match:
-                date = match.group(1)
-                time_str = match.group(2)
-                category_raw = match.group(3).strip()
-                amount_str = match.group(4).replace(" ", "").replace(",", ".")
-                # Остаток игнорируем
+Правила:
+1. ПРОПУСТИ операции где в описании есть: "SBERBANK ONL@IN", "VKLAD-KARTA", "KARTA-VKLAD" — это внутренние переброски
+2. ПРОПУСТИ супермаркеты: Пятерочка, Магнит, KRASNOE, BELOE, MAGAZIN и подобные — они вводятся вручную
+3. Суммы со знаком + это доходы, без знака или с - это расходы
+4. Снятие наличных (ATM, банкомат) — тип "наличные"
 
-                # Знак + определяем из категории
-                is_income = "+" in amount_str or any(
-                    w in category_raw.lower() for w in ["перевод сбп", "перевод от"]
-                )
+Для каждой операции верни:
+{{
+  "дата": "DD.MM.YYYY",
+  "сумма": число (всегда положительное),
+  "тип": "расход" или "доход" или "наличные",
+  "категория": одна из: Продукты/Кафе/Транспорт/Одежда/Дом/Медицина/Коммуналка/Переводы/Дети/Подписки/Доход/Наличные/Прочее,
+  "описание": краткое описание операции,
+  "получатель": имя человека если это перевод (например "Маргарита П."), иначе ""
+}}
 
-                # Описание — следующая строка (код авторизации + описание)
-                description = ""
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1]
-                    # Пропускаем строку с кодом авторизации (6 цифр в начале)
-                    if re.match(r'^\d{6}\s+', next_line):
-                        description = re.sub(r'^\d{6}\s+', '', next_line).strip()
-                        # Убираем "Операция по счету ****XXXX"
-                        description = re.sub(r'\s*Операция по (счету|карте)\s+\*+\d+', '', description).strip()
-                        i += 1
+Категории для переводов людям:
+- Маргарита П. → Дети
+- Диана Ш. → Дети  
+- Алексей П. → Переводы
+- Раиса Г. → Семья
+- Любой другой перевод человеку → Переводы
 
-                try:
-                    amount = float(amount_str)
-                except ValueError:
-                    i += 1
-                    continue
+Текст выписки:
+{full_text[:6000]}"""
 
-                # Определяем тип по категории и описанию
-                cat_lower = category_raw.lower()
-                desc_lower = description.lower()
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
+        items = json.loads(raw)
 
-                # Пропускаем внутренние переброски
-                if any(s in desc_lower for s in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
-                    i += 1
-                    continue
-
-                # Пропускаем супермаркеты
-                is_supermarket = "супермаркет" in cat_lower or any(
-                    s in desc_lower for s in SKIP_MERCHANTS
-                )
-                if is_supermarket:
-                    i += 1
-                    continue
-
-                # Определяем тип операции
-                is_income = "+" in line or any(
-                    w in desc_lower for w in ["перевод от ", "пополнение"]
-                ) or any(
-                    w in cat_lower for w in ["перевод сбп"]
-                ) and "перевод от" in desc_lower
-
-                # Наличные
-                if "наличн" in cat_lower or "atm" in desc_lower:
-                    operations.append({
-                        "дата": date,
-                        "сумма": amount,
-                        "тип": "наличные",
-                        "категория": "Наличные",
-                        "подкатегория": "",
-                        "магазин": "",
-                        "описание": "Снятие наличных",
-                        "уверенность": 1.0
-                    })
-                    i += 1
-                    continue
-
-                # Категория по имени человека
-                our_category = None
-                op_type = "доход" if is_income else "расход"
-
-                for name, cat in PEOPLE_CATEGORIES.items():
-                    if name in desc_lower:
-                        our_category = cat
-                        break
-
-                if not our_category:
-                    # Категория по типу из выписки
-                    category_map = {
-                        "рестораны": "Кафе",
-                        "кафе": "Кафе",
-                        "одежда": "Одежда",
-                        "аксессуары": "Одежда",
-                        "дома": "Дом",
-                        "транспорт": "Транспорт",
-                        "медицин": "Медицина",
-                        "аптек": "Медицина",
-                        "связь": "Коммуналка",
-                        "интернет": "Коммуналка",
-                        "жкх": "Коммуналка",
-                        "коммунал": "Коммуналка",
-                        "перевод": "Переводы",
-                        "яндекс": "Подписки",
-                    }
-                    for key, val in category_map.items():
-                        if key in cat_lower or key in desc_lower:
-                            our_category = val
-                            break
-
-                if not our_category:
-                    our_category = "Доход" if is_income else "Прочее"
-
-                operations.append({
-                    "дата": date,
-                    "сумма": amount,
-                    "тип": op_type,
-                    "категория": our_category,
-                    "подкатегория": "",
-                    "магазин": "",
-                    "описание": description or category_raw,
-                    "уверенность": 0.9
-                })
-
-            i += 1
-
-        return operations
+        # Фильтруем и нормализуем
+        result = []
+        for item in items:
+            amount = float(item.get("сумма", 0))
+            if amount <= 0:
+                continue
+            result.append({
+                "дата": item.get("дата", ""),
+                "сумма": amount,
+                "тип": item.get("тип", "расход"),
+                "категория": item.get("категория", "Прочее"),
+                "подкатегория": "",
+                "магазин": "",
+                "описание": item.get("описание", ""),
+                "получатель": item.get("получатель", ""),
+                "уверенность": 0.9
+            })
+        return result
 
     except ImportError:
         logger.error("pypdf не установлен")
@@ -294,7 +224,6 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
     except Exception as e:
         logger.error(f"Ошибка парсинга PDF: {e}")
         return []
-
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
