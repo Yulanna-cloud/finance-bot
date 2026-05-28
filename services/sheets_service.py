@@ -100,7 +100,7 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
             operation.get("подкатегория", ""),       # Подкатегория
             operation.get("магазин", ""),            # Магазин
             operation.get("описание", ""),           # Товар/Описание
-            "",                                       # Получатель
+            operation.get("получатель", ""),         # Получатель
             "карта",                                  # Способ оплаты
             "",                                       # Счет
             source,                                   # Источник данных
