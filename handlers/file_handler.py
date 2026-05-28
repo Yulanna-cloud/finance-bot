@@ -7,6 +7,7 @@ import logging
 import io
 import os
 import re
+import json
 import pandas as pd
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -17,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 MAX_OPERATIONS = 200
 
-# Магазины которые пропускаем (вводятся вручную)
 SKIP_MERCHANTS = [
     "pyaterochka", "пятерочка", "magnit", "магнит", "krasnoe", "красное",
     "белое", "magazin", "находка", "ежик", "светофор", "монеточка",
@@ -25,128 +25,16 @@ SKIP_MERCHANTS = [
     "fix price", "самокат"
 ]
 
-# Внутренние переброски Сбера — пропускаем
 SKIP_DESCRIPTIONS = [
     "vklad-karta", "karta-vklad", "sberbank onl@in"
 ]
 
-# Имена людей → категории
 PEOPLE_CATEGORIES = {
     "маргарита": "Дети",
     "диана ш": "Дети",
     "алексей п": "Переводы",
     "раиса": "Семья",
 }
-
-
-def should_skip(description: str, category: str) -> bool:
-    """Проверяет нужно ли пропустить операцию."""
-    desc_lower = description.lower()
-
-    # Пропускаем внутренние переброски
-    for skip in SKIP_DESCRIPTIONS:
-        if skip in desc_lower:
-            return True
-
-    # Пропускаем супермаркеты
-    if "супермаркет" in category.lower():
-        for merchant in SKIP_MERCHANTS:
-            if merchant in desc_lower:
-                return True
-
-    return False
-
-
-def classify_sber_operation(row: dict) -> dict | None:
-    date = str(row.get("дата", ""))
-    category_raw = str(row.get("категория", "")).lower()
-    description = str(row.get("описание", ""))
-    amount_raw = str(row.get("сумма", "0")).replace(" ", "").replace(",", ".")
-    is_income = row.get("тип") == "доход"
-
-    try:
-        amount = abs(float(amount_raw))
-    except ValueError:
-        return None
-
-    if amount <= 0:
-        return None
-
-    desc_lower = description.lower()
-
-    # Пропускаем внутренние переброски
-    if any(s in desc_lower for s in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
-        return None
-
-    # Пропускаем супермаркеты
-    if "супермаркет" in category_raw or any(s in desc_lower for s in SKIP_MERCHANTS):
-        return None
-
-    # Наличные
-    if "наличн" in category_raw or "atm" in desc_lower:
-        return {
-            "дата": date,
-            "сумма": amount,
-            "тип": "наличные",
-            "категория": "Наличные",
-            "подкатегория": "",
-            "магазин": "",
-            "описание": "Снятие наличных",
-            "получатель": "",
-            "уверенность": 1.0
-        }
-
-    # Определяем получателя/отправителя из описания
-    получатель = ""
-    our_category = None
-    op_type = "доход" if is_income else "расход"
-
-    for name, cat in PEOPLE_CATEGORIES.items():
-        if name in desc_lower:
-            our_category = cat
-            # Извлекаем полное имя из описания
-            # "Перевод для П. Маргарита Алексеевна" → "Маргарита П."
-            name_match = re.search(r'(?:для|от)\s+([А-ЯЁ]\.\s+[А-ЯЁа-яё]+(?:\s+[А-ЯЁа-яё]+)?)', description)
-            if name_match:
-                получатель = name_match.group(1).strip()
-            break
-
-    if not our_category:
-        category_map = {
-            "рестораны": "Кафе",
-            "кафе": "Кафе",
-            "одежда": "Одежда",
-            "аксессуары": "Одежда",
-            "дома": "Дом",
-            "транспорт": "Транспорт",
-            "медицин": "Медицина",
-            "аптек": "Медицина",
-            "связь": "Коммуналка",
-            "интернет": "Коммуналка",
-            "жкх": "Коммуналка",
-            "коммунал": "Коммуналка",
-            "перевод": "Переводы",
-            "яндекс": "Подписки",
-        }
-        for key, val in category_map.items():
-            if key in category_raw or key in desc_lower:
-                our_category = val
-                break
-
-    if not our_category:
-        our_category = "Доход" if is_income else "Прочее"
-
-    return {
-        "дата": date,
-        "сумма": amount,
-        "тип": op_type,
-        "категория": our_category,
-        "подкатегория": "",
-        "магазин": "",
-        "описание": description or category_raw,
-        "получатель": получатель,
-        "уверенность": 0.9
-    }
 
 
 def parse_sber_pdf(pdf_bytes: bytes) -> list:
@@ -160,6 +48,8 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
 
+        logger.info(f"PDF прочитан, длина текста: {len(full_text)}")
+
         if not groq_client:
             logger.error("GROQ_API_KEY не найден")
             return []
@@ -172,19 +62,14 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
 3. Суммы со знаком + это доходы, без знака или с - это расходы
 4. Снятие наличных (ATM, банкомат) — тип "наличные"
 
-Для каждой операции верни:
-{{
-  "дата": "DD.MM.YYYY",
-  "сумма": число (всегда положительное),
-  "тип": "расход" или "доход" или "наличные",
-  "категория": одна из: Продукты/Кафе/Транспорт/Одежда/Дом/Медицина/Коммуналка/Переводы/Дети/Подписки/Доход/Наличные/Прочее,
-  "описание": краткое описание операции,
-  "получатель": имя человека если это перевод (например "Маргарита П."), иначе ""
-}}
+Для каждой подходящей операции верни объект:
+{{"дата":"DD.MM.YYYY","сумма":число,"тип":"расход или доход или наличные","категория":"одна из списка","описание":"краткое описание","получатель":"имя если перевод человеку иначе пустая строка"}}
+
+Категории: Продукты, Кафе, Транспорт, Одежда, Дом, Медицина, Коммуналка, Переводы, Дети, Подписки, Доход, Наличные, Прочее
 
 Категории для переводов людям:
 - Маргарита П. → Дети
-- Диана Ш. → Дети  
+- Диана Ш. → Дети
 - Алексей П. → Переводы
 - Раиса Г. → Семья
 - Любой другой перевод человеку → Переводы
@@ -197,12 +82,19 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             messages=[{"role": "user", "content": prompt}]
         )
         raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        items = json.loads(raw)
+        logger.info(f"Groq ответ (первые 500 символов): {raw[:500]}")
 
-        # Фильтруем и нормализуем
+        items = json.loads(raw)
+        if not isinstance(items, list):
+            logger.error(f"Groq вернул не массив: {type(items)}")
+            return []
+
         result = []
         for item in items:
-            amount = float(item.get("сумма", 0))
+            try:
+                amount = float(str(item.get("сумма", 0)).replace(",", "."))
+            except (ValueError, TypeError):
+                continue
             if amount <= 0:
                 continue
             result.append({
@@ -216,14 +108,20 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
                 "получатель": item.get("получатель", ""),
                 "уверенность": 0.9
             })
+
+        logger.info(f"Разобрано операций: {len(result)}")
         return result
 
     except ImportError:
         logger.error("pypdf не установлен")
         return []
-    except Exception as e:
-        logger.error(f"Ошибка парсинга PDF: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка парсинга JSON от Groq: {e}")
         return []
+    except Exception as e:
+        logger.error(f"Ошибка парсинга PDF: {e}", exc_info=True)
+        return []
+
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
@@ -235,7 +133,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if ext not in (".csv", ".xlsx", ".xls", ".pdf"):
         await update.message.reply_text(
-            "📄 Поддерживаю файлы *CSV*, *Excel* (.xlsx, .xls) и *PDF* (выписка Сбербанка)\n",
+            "📄 Поддерживаю файлы *CSV*, *Excel* (.xlsx, .xls) и *PDF* (выписка Сбербанка)",
             parse_mode="Markdown"
         )
         return
@@ -252,19 +150,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         operations = []
 
         if ext == ".pdf":
-            await update.message.reply_text(
-                "📄 Определила формат Сбербанка. Фильтрую операции...",
-            )
+            await update.message.reply_text("📄 Определила формат Сбербанка. Анализирую операции...")
             operations = parse_sber_pdf(file_bytes)
-
         else:
             buf = io.BytesIO(file_bytes)
             df = read_statement_file(buf, ext, filename)
 
             if df is None or df.empty:
-                await update.message.reply_text(
-                    "❌ Не смогла прочитать файл."
-                )
+                await update.message.reply_text("❌ Не смогла прочитать файл.")
                 return
 
             if len(df) > MAX_OPERATIONS:
@@ -281,33 +174,25 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Считаем статистику (наличные не считаем)
-        total_expense = sum(
-            op.get("сумма", 0) for op in operations
-            if op.get("тип") == "расход"
-        )
-        total_income = sum(
-            op.get("сумма", 0) for op in operations
-            if op.get("тип") == "доход"
-        )
+        total_expense = sum(op.get("сумма", 0) for op in operations if op.get("тип") == "расход")
+        total_income = sum(op.get("сумма", 0) for op in operations if op.get("тип") == "доход")
         cash_count = sum(1 for op in operations if op.get("тип") == "наличные")
 
-        # Показываем превью
         preview_lines = ["📋 *Найдены операции:*\n"]
         for op in operations[:10]:
             тип = op.get("тип", "")
             emoji = "💰" if тип == "доход" else "🏧" if тип == "наличные" else "💸"
+            получатель = op.get("получатель", "")
+            описание = op.get("описание", "")
+            показать = f"{описание} → {получатель}" if получатель else описание
             preview_lines.append(
-                f"{emoji} {op.get('описание', '')[:35]} — "
+                f"{emoji} {показать[:40]} — "
                 f"{op.get('сумма', 0):,.0f} ₽ ({op.get('категория', '')})"
             )
         if len(operations) > 10:
             preview_lines.append(f"_...и ещё {len(operations) - 10} операций_")
 
-        await update.message.reply_text(
-            "\n".join(preview_lines),
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("\n".join(preview_lines), parse_mode="Markdown")
 
         ok, errors = write_operations_batch(operations, source="выписка_сбер")
 
