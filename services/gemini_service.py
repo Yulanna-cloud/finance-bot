@@ -3,17 +3,28 @@ import json
 import logging
 import re
 import base64
+import io
 from google import genai
 from google.genai import types
+from groq import Groq
 
 logger = logging.getLogger(__name__)
 
-api_key = os.getenv("GEMINI_API_KEY")
-client = None
-if api_key:
-    client = genai.Client(api_key=api_key)
+# Gemini для категоризации текста и чеков
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+gemini_client = None
+if gemini_api_key:
+    gemini_client = genai.Client(api_key=gemini_api_key)
 else:
     logger.error("GEMINI_API_KEY не найден!")
+
+# Groq для расшифровки голоса
+groq_api_key = os.getenv("GROQ_API_KEY")
+groq_client = None
+if groq_api_key:
+    groq_client = Groq(api_key=groq_api_key)
+else:
+    logger.error("GROQ_API_KEY не найден!")
 
 CATEGORY_RULES = {
     "Продукты": [
@@ -73,7 +84,7 @@ def classify_text(text: str) -> dict:
                     "уверенность": 0.95
                 }
 
-    if not client:
+    if not gemini_client:
         return _default(text, amount, op_type)
 
     prompt = f"""Ты помощник для учёта финансов. Верни ТОЛЬКО JSON без markdown.
@@ -95,7 +106,7 @@ def classify_text(text: str) -> dict:
 }}"""
 
     try:
-        response = client.models.generate_content(
+        response = gemini_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt
         )
@@ -143,32 +154,33 @@ def _default(text, amount, op_type):
 
 
 def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    if not client:
+    if not groq_client:
+        logger.error("GROQ_API_KEY не найден, голос не расшифрую")
         return ""
     try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
-                "Расшифруй это голосовое сообщение на русском языке. Верни ТОЛЬКО текст, без пояснений."
-            ]
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "voice.ogg"
+        transcription = groq_client.audio.transcriptions.create(
+            model="whisper-large-v3",
+            file=audio_file,
+            language="ru"
         )
-        text = response.text.strip()
-        logger.info(f"Расшифровка голоса: {text}")
+        text = transcription.text.strip()
+        logger.info(f"Расшифровка голоса (Groq): {text}")
         return text
     except Exception as e:
-        logger.error(f"Ошибка голоса: {e}")
+        logger.error(f"Ошибка голоса Groq: {e}")
         return ""
 
 
 def read_receipt_image(image_bytes: bytes) -> dict:
-    if not client:
+    if not gemini_client:
         return {"ошибка": "нет API ключа", "позиции": []}
     try:
         prompt = """Прочитай чек, верни ТОЛЬКО JSON:
 {"магазин":"название","дата":"дата","итого":сумма,"позиции":[{"название":"товар","сумма":число,"категория":"Продукты","подкатегория":"молочка"}]}
 Молоко→молочка, Порошок/мыло→бытовая химия, Хлеб→хлеб, Мясо→мясо"""
-        response = client.models.generate_content(
+        response = gemini_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
@@ -183,7 +195,7 @@ def read_receipt_image(image_bytes: bytes) -> dict:
 
 
 def parse_bank_statement(text: str) -> list:
-    if not client:
+    if not gemini_client:
         return []
     try:
         prompt = f"""Разбери выписку, верни ТОЛЬКО JSON массив:
@@ -191,7 +203,7 @@ def parse_bank_statement(text: str) -> list:
 Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Одежда, Развлечения, Подписки, Доход, Прочее
 Выписка:
 {text[:4000]}"""
-        response = client.models.generate_content(
+        response = gemini_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt
         )
