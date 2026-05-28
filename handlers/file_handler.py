@@ -167,61 +167,132 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
-            logger.info(f"PDF текст: {full_text[:3000]}")
 
         operations = []
-        lines = full_text.split("\n")
+        lines = [l.strip() for l in full_text.split("\n") if l.strip()]
 
         i = 0
         while i < len(lines):
-            line = lines[i].strip()
+            line = lines[i]
 
-            # Ищем строки с датой формата DD.MM.YYYY HH:MM
-            date_match = re.match(r'^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})', line)
-            if date_match:
-                date = date_match.group(1)
+            # Ищем строку с датой и временем: "28.05.2026 06:49 Категория сумма остаток"
+            match = re.match(
+                r'^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+?)\s+([\d\s]+[,]\d{2})\s+([\d\s]+[,]\d{2})\s*$',
+                line
+            )
+            if match:
+                date = match.group(1)
+                time_str = match.group(2)
+                category_raw = match.group(3).strip()
+                amount_str = match.group(4).replace(" ", "").replace(",", ".")
+                # Остаток игнорируем
 
-                # Категория — в этой же строке после времени
-                rest = line[date_match.end():].strip()
-                category = rest
+                # Знак + определяем из категории
+                is_income = "+" in amount_str or any(
+                    w in category_raw.lower() for w in ["перевод сбп", "перевод от"]
+                )
 
-                # Сумма — ищем в этой строке
-                amount_match = re.search(r'([+\-]?\s*[\d\s]+[,\.]?\d{0,2})\s*$', line)
-                amount_raw = ""
-                if amount_match:
-                    amount_raw = amount_match.group(1).replace(" ", "")
-
-                # Описание — следующая строка
+                # Описание — следующая строка (код авторизации + описание)
                 description = ""
                 if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    # Если следующая строка не дата — это описание
-                    if not re.match(r'^\d{2}\.\d{2}\.\d{4}', next_line):
-                        description = next_line
+                    next_line = lines[i + 1]
+                    # Пропускаем строку с кодом авторизации (6 цифр в начале)
+                    if re.match(r'^\d{6}\s+', next_line):
+                        description = re.sub(r'^\d{6}\s+', '', next_line).strip()
+                        # Убираем "Операция по счету ****XXXX"
+                        description = re.sub(r'\s*Операция по (счету|карте)\s+\*+\d+', '', description).strip()
                         i += 1
 
-                # Определяем тип по знаку
-                is_income = amount_raw.startswith("+")
-                amount_clean = amount_raw.replace("+", "").replace("-", "").replace(",", ".").strip()
-
                 try:
-                    amount = float(amount_clean)
+                    amount = float(amount_str)
                 except ValueError:
                     i += 1
                     continue
 
-                row = {
-                    "дата": date,
-                    "категория": category,
-                    "описание": description,
-                    "сумма": amount,
-                    "сумма_raw": amount_raw,
-                    "тип": "доход" if is_income else "расход"
-                }
+                # Определяем тип по категории и описанию
+                cat_lower = category_raw.lower()
+                desc_lower = description.lower()
 
-                result = classify_sber_operation(row)
-                if result:
-                    operations.append(result)
+                # Пропускаем внутренние переброски
+                if any(s in desc_lower for s in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
+                    i += 1
+                    continue
+
+                # Пропускаем супермаркеты
+                is_supermarket = "супермаркет" in cat_lower or any(
+                    s in desc_lower for s in SKIP_MERCHANTS
+                )
+                if is_supermarket:
+                    i += 1
+                    continue
+
+                # Определяем тип операции
+                is_income = "+" in line or any(
+                    w in desc_lower for w in ["перевод от ", "пополнение"]
+                ) or any(
+                    w in cat_lower for w in ["перевод сбп"]
+                ) and "перевод от" in desc_lower
+
+                # Наличные
+                if "наличн" in cat_lower or "atm" in desc_lower:
+                    operations.append({
+                        "дата": date,
+                        "сумма": amount,
+                        "тип": "наличные",
+                        "категория": "Наличные",
+                        "подкатегория": "",
+                        "магазин": "",
+                        "описание": "Снятие наличных",
+                        "уверенность": 1.0
+                    })
+                    i += 1
+                    continue
+
+                # Категория по имени человека
+                our_category = None
+                op_type = "доход" if is_income else "расход"
+
+                for name, cat in PEOPLE_CATEGORIES.items():
+                    if name in desc_lower:
+                        our_category = cat
+                        break
+
+                if not our_category:
+                    # Категория по типу из выписки
+                    category_map = {
+                        "рестораны": "Кафе",
+                        "кафе": "Кафе",
+                        "одежда": "Одежда",
+                        "аксессуары": "Одежда",
+                        "дома": "Дом",
+                        "транспорт": "Транспорт",
+                        "медицин": "Медицина",
+                        "аптек": "Медицина",
+                        "связь": "Коммуналка",
+                        "интернет": "Коммуналка",
+                        "жкх": "Коммуналка",
+                        "коммунал": "Коммуналка",
+                        "перевод": "Переводы",
+                        "яндекс": "Подписки",
+                    }
+                    for key, val in category_map.items():
+                        if key in cat_lower or key in desc_lower:
+                            our_category = val
+                            break
+
+                if not our_category:
+                    our_category = "Доход" if is_income else "Прочее"
+
+                operations.append({
+                    "дата": date,
+                    "сумма": amount,
+                    "тип": op_type,
+                    "категория": our_category,
+                    "подкатегория": "",
+                    "магазин": "",
+                    "описание": description or category_raw,
+                    "уверенность": 0.9
+                })
 
             i += 1
 
