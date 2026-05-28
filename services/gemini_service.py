@@ -10,7 +10,7 @@ from groq import Groq
 
 logger = logging.getLogger(__name__)
 
-# Gemini для категоризации текста и чеков
+# Gemini (для категоризации текста — не требует изображений)
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 gemini_client = None
 if gemini_api_key:
@@ -18,7 +18,7 @@ if gemini_api_key:
 else:
     logger.error("GEMINI_API_KEY не найден!")
 
-# Groq для расшифровки голоса
+# Groq для голоса и чеков
 groq_api_key = os.getenv("GROQ_API_KEY")
 groq_client = None
 if groq_api_key:
@@ -84,7 +84,7 @@ def classify_text(text: str) -> dict:
                     "уверенность": 0.95
                 }
 
-    if not gemini_client:
+    if not groq_client:
         return _default(text, amount, op_type)
 
     prompt = f"""Ты помощник для учёта финансов. Верни ТОЛЬКО JSON без markdown.
@@ -106,17 +106,17 @@ def classify_text(text: str) -> dict:
 }}"""
 
     try:
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
         )
-        raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(raw)
         if not result.get("сумма") and amount:
             result["сумма"] = amount
         return result
     except Exception as e:
-        logger.error(f"Ошибка Gemini: {e}")
+        logger.error(f"Ошибка Groq classify: {e}")
         return _default(text, amount, op_type)
 
 
@@ -155,7 +155,7 @@ def _default(text, amount, op_type):
 
 def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     if not groq_client:
-        logger.error("GROQ_API_KEY не найден, голос не расшифрую")
+        logger.error("GROQ_API_KEY не найден")
         return ""
     try:
         audio_file = io.BytesIO(audio_bytes)
@@ -174,41 +174,48 @@ def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
 
 
 def read_receipt_image(image_bytes: bytes) -> dict:
-    if not gemini_client:
-        return {"ошибка": "нет API ключа", "позиции": []}
+    if not groq_client:
+        return {"ошибка": "нет GROQ_API_KEY", "позиции": []}
     try:
-        prompt = """Прочитай чек, верни ТОЛЬКО JSON:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        prompt = """Прочитай чек на изображении, верни ТОЛЬКО JSON без markdown:
 {"магазин":"название","дата":"дата","итого":сумма,"позиции":[{"название":"товар","сумма":число,"категория":"Продукты","подкатегория":"молочка"}]}
-Молоко→молочка, Порошок/мыло→бытовая химия, Хлеб→хлеб, Мясо→мясо"""
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                prompt
+Молоко/кефир/йогурт→молочка, Порошок/мыло/шампунь→бытовая химия, Хлеб/батон→хлеб, Мясо/курица→мясо.
+Категории: Продукты, Кафе, Транспорт, Медицина, Красота, Одежда, Прочее."""
+        response = groq_client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                        {"type": "text", "text": prompt}
+                    ]
+                }
             ]
         )
-        raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(raw)
     except Exception as e:
-        logger.error(f"Ошибка чека: {e}")
+        logger.error(f"Ошибка чека Groq: {e}")
         return {"ошибка": str(e), "позиции": []}
 
 
 def parse_bank_statement(text: str) -> list:
-    if not gemini_client:
+    if not groq_client:
         return []
     try:
-        prompt = f"""Разбери выписку, верни ТОЛЬКО JSON массив:
+        prompt = f"""Разбери выписку, верни ТОЛЬКО JSON массив без markdown:
 [{{"дата":"DD.MM.YYYY","сумма":число,"тип":"расход/доход","категория":"...","магазин":"...","описание":"...","уверенность":0.8}}]
 Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Одежда, Развлечения, Подписки, Доход, Прочее
 Выписка:
 {text[:4000]}"""
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
         )
-        raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(raw)
     except Exception as e:
-        logger.error(f"Ошибка выписки: {e}")
+        logger.error(f"Ошибка выписки Groq: {e}")
         return []
