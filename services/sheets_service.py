@@ -342,58 +342,82 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
 
 def smart_query(query_text: str) -> dict:
     """
-    Умный поиск по операциям и архиву с правильными заголовками вашей таблицы.
+    Умный поиск по операциям и архиву, который сам автоматически находит нужные столбцы.
     """
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         
         ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
-        archive_sheet = spreadsheet.worksheet("Архив") # Имя листа с большой буквы
+        archive_sheet = spreadsheet.worksheet("Архив")
         
-        # 1. Заголовки для листа ОПЕРАЦИИ (23 колонки)
-        expected_ops = ["ID", "Group ID", "Дата", "Время", "Month", "Year", "Тип", "Сумма", "Валюта", "Категория", "Подкатегория", "Магазин", "Товар / Описание", "Получатель", "Способ оплаты", "Статус оплаты", "Источник", "Исходный текст", "Confidence", "Confirmed", "Статус", "Проверил", "Дата проверки"]
-        
-        # 2. Реальные заголовки вашего листа Архив (8 колонок)
-        expected_archive = ["Период", "Год", "Месяц", "Категория", "Тип", "Сумма", "Количество операций", "Дата архивирования"]
-        
-        ops_rows = ops_sheet.get_all_records(expected_headers=expected_ops)
+        # Читаем чистые данные как списки строк (без get_all_records), чтобы gspread не ругался
+        ops_rows = ops_sheet.get_all_values()
         try:
-            archive_rows = archive_sheet.get_all_records(expected_headers=expected_archive)
+            archive_rows = archive_sheet.get_all_values()
         except Exception as e:
             logger.error(f"Не удалось прочитать лист Архив: {e}")
             archive_rows = []
             
+        if len(ops_rows) <= 1 and len(archive_rows) <= 1:
+            return {"ответ": "В таблице пока нет операций."}
+            
         query_lower = query_text.lower()
         found_lines = []
         
-        # Поиск в активных ОПЕРАЦИЯХ
-        for row in ops_rows:
-            category = str(row.get("Категория", "")).lower()
-            desc = str(row.get("Товар / Описание", "")).lower()
+        # 1. Поиск в активных ОПЕРАЦИЯХ
+        if len(ops_rows) > 1:
+            # Приводим шапку к нижнему регистру для точного поиска
+            ops_headers = [h.strip().lower() for h in ops_rows[0]]
             
-            if query_lower in category or query_lower in desc:
-                date = row.get("Дата", "—")
-                op_type = "💸" if row.get("Тип") == "расход" else "💰"
-                amount = row.get("Сумма", "0")
-                cat = row.get("Категория", "Прочее")
-                d_text = row.get("Товар / Описание", "")
-                found_lines.append(f"📅 {date} | {op_type} {amount} ₽ | {cat} | _{d_text}_")
+            # Автоматически определяем номера столбцов по их именам
+            idx_date = ops_headers.index("дата") if "дата" in ops_headers else 2
+            idx_type = ops_headers.index("тип") if "тип" in ops_headers else 6
+            idx_amount = ops_headers.index("сумма") if "сумма" in ops_headers else 7
+            idx_cat = ops_headers.index("категория") if "категория" in ops_headers else 9
+            
+            # Ищем "товар / описание" или просто "описание"
+            if "товар / описание" in ops_headers:
+                idx_desc = ops_headers.index("товар / описание")
+            elif "описание" in ops_headers:
+                idx_desc = ops_headers.index("описание")
+            else:
+                idx_desc = 13
+            
+            for row in ops_rows[1:]:
+                cat_val = row[idx_cat].lower() if len(row) > idx_cat else ""
+                desc_val = row[idx_desc].lower() if len(row) > idx_desc else ""
                 
-        # Поиск в АРХИВЕ (тут структура проще, ищем по Категории)
-        for row in archive_rows:
-            category = str(row.get("Категория", "")).lower()
-            if query_lower in category:
-                period = row.get("Период", "—")
-                op_type = "💸" if row.get("Тип") == "расход" else "💰"
-                amount = row.get("Сумма", "0")
-                cat = row.get("Категория", "Прочее")
-                found_lines.append(f"🗄️ Архив ({period}) | {op_type} {amount} ₽ | {cat}")
+                if query_lower in cat_val or query_lower in desc_val:
+                    date = row[idx_date] if len(row) > idx_date else "—"
+                    t_val = row[idx_type].lower() if len(row) > idx_type else "расход"
+                    op_type = "💸" if "расход" in t_val else "💰"
+                    amount = row[idx_amount] if len(row) > idx_amount else "0"
+                    cat = row[idx_cat] if len(row) > idx_cat else "Прочее"
+                    d_text = row[idx_desc] if len(row) > idx_desc else ""
+                    found_lines.append(f"📅 {date} | {op_type} {amount} ₽ | {cat} | _{d_text}_")
+                    
+        # 2. Поиск в АРХИВЕ
+        if len(archive_rows) > 1:
+            arc_headers = [h.strip().lower() for h in archive_rows[0]]
+            idx_arc_period = arc_headers.index("период") if "период" in arc_headers else 0
+            idx_arc_type = arc_headers.index("тип") if "тип" in arc_headers else 4
+            idx_arc_amount = arc_headers.index("сумма") if "сумма" in arc_headers else 5
+            idx_arc_cat = arc_headers.index("категория") if "категория" in arc_headers else 3
+            
+            for row in archive_rows[1:]:
+                cat_val = row[idx_arc_cat].lower() if len(row) > idx_arc_cat else ""
+                if query_lower in cat_val:
+                    period = row[idx_arc_period] if len(row) > idx_arc_period else "—"
+                    t_val = row[idx_arc_type].lower() if len(row) > idx_arc_type else "расход"
+                    op_type = "💸" if "расход" in t_val else "💰"
+                    amount = row[idx_arc_amount] if len(row) > idx_arc_amount else "0"
+                    cat = row[idx_arc_cat] if len(row) > idx_arc_cat else "Прочее"
+                    found_lines.append(f"🗄️ Архив ({period}) | {op_type} {amount} ₽ | {cat}")
 
         if not found_lines:
             return {"ответ": f"Ничего не нашлось по запросу «{query_text}»"}
             
-        # Формируем красивый текстовый ответ (последние 5 записей)
         lines = [f"🔍 Результаты по запросу «{query_text}» (последние 5):"]
         lines.extend(found_lines[-5:])
             
@@ -401,6 +425,5 @@ def smart_query(query_text: str) -> dict:
     except Exception as e:
         logger.error(f"Ошибка в smart_query: {e}")
         return {"ошибка": str(e)}
-
 
 
