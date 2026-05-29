@@ -1,15 +1,31 @@
 """
 Обработчик текстовых сообщений.
-Примеры: "кофе 350", "такси 300", "Пятерочка 1450", "зарплата 85000"
 """
 import re
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from services.gemini_service import classify_text
-from services.sheets_service import write_operation
+from services.sheets_service import write_operation, smart_query
 
 logger = logging.getLogger(__name__)
+
+# Слова которые означают вопрос, а не запись расхода
+QUERY_KEYWORDS = [
+    "сколько", "покажи", "дай", "итого", "всего", "расходы за",
+    "доходы за", "потратила", "потратил", "пришло", "приходило",
+    "сумма", "статистика", "отчет за", "за январь", "за февраль",
+    "за март", "за апрель", "за май", "за июнь", "за июль",
+    "за август", "за сентябрь", "за октябрь", "за ноябрь", "за декабрь",
+    "от алексея", "от дианы", "от маргариты", "от раисы",
+    "на продукты", "на кафе", "на транспорт", "на одежду"
+]
+
+
+def is_query(text: str) -> bool:
+    """Проверяет — это вопрос к боту или запись расхода."""
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in QUERY_KEYWORDS)
 
 
 def extract_amount(text: str):
@@ -31,7 +47,6 @@ def extract_amount(text: str):
 
 
 async def _send_multi(update, result, source):
-    """Записывает несколько позиций из детального ввода."""
     позиции = result.get("позиции", [])
     магазин = result.get("магазин", "")
     тип = result.get("тип", "расход")
@@ -69,12 +84,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
+    # Проверяем — это вопрос или запись расхода?
+    if is_query(text):
+        await update.message.reply_text("🔍 Ищу в таблице...")
+        try:
+            result = smart_query(text)
+            if "ошибка" in result:
+                await update.message.reply_text(f"❌ {result['ошибка']}")
+            else:
+                await update.message.reply_text(result["ответ"], parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Ошибка smart_query: {e}")
+            await update.message.reply_text("❌ Не смогла обработать вопрос.")
+        return
+
     await update.message.reply_text("⏳ Записываю...")
 
     try:
         result = classify_text(text)
 
-        # Детальный ввод с несколькими позициями
         if result.get("мультизапись"):
             await _send_multi(update, result, source="telegram_текст")
             return
