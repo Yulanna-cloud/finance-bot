@@ -254,3 +254,178 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
     except Exception as e:
         logger.error(f"Ошибка получения отчёта: {e}")
         return {"ошибка": str(e)}
+
+def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> dict:
+    """Архивирует операции за месяц и очищает лист ОПЕРАЦИИ."""
+    try:
+        now = datetime.now()
+        # Архивируем предыдущий месяц если не указан
+        if not month:
+            if now.month == 1:
+                month = 12
+                year = now.year - 1
+            else:
+                month = now.month - 1
+                year = now.year or now.year
+
+        report = get_monthly_report(month, year)
+        if "ошибка" in report:
+            return report
+
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+
+        # Читаем ОПЕРАЦИИ
+        ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
+        all_rows = ops_sheet.get_all_records()
+
+        # Читаем АРХИВ
+        archive_sheet = spreadsheet.worksheet("АРХИВ")
+
+        month_names_ru = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        }
+        month_name = month_names_ru[month]
+        период = f"{month_name} {year}"
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+        # Готовим строки для архива — по категориям
+        archive_rows = []
+        for cat, amount in report["все_категории"].items():
+            archive_rows.append([
+                период, str(year), month_name,
+                cat, "расход", round(amount, 2),
+                "", now_str
+            ])
+
+        # Добавляем доходы
+        if report["доходы"] > 0:
+            archive_rows.append([
+                период, str(year), month_name,
+                "Доход", "доход", round(report["доходы"], 2),
+                "", now_str
+            ])
+
+        # Записываем в архив
+        if archive_rows:
+            archive_sheet.append_rows(archive_rows, value_input_option="USER_ENTERED")
+
+        # Считаем сколько строк удалить из ОПЕРАЦИИ
+        очищено = 0
+        rows_to_keep = []
+        for row in all_rows:
+            row_month = str(row.get("Месяц", ""))
+            row_year = str(row.get("Год", ""))
+            row_date = str(row.get("Дата", ""))
+
+            in_period = False
+            if row_month.lower() == month_name.lower() and str(year) in row_year:
+                in_period = True
+            elif row_date:
+                try:
+                    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+                        try:
+                            dt = datetime.strptime(row_date[:10], fmt)
+                            if dt.month == month and dt.year == year:
+                                in_period = True
+                            break
+                        except ValueError:
+                            continue
+                except Exception:
+                    pass
+
+            if in_period:
+                очищено += 1
+            else:
+                rows_to_keep.append(row)
+
+        # Очищаем лист и записываем только оставшиеся строки
+        if очищено > 0:
+            # Получаем заголовки
+            headers = ops_sheet.row_values(1)
+            # Очищаем всё кроме заголовка
+            ops_sheet.resize(1)
+            # Записываем оставшиеся строки если есть
+            if rows_to_keep:
+                remaining = [[str(row.get(h, "")) for h in headers] for row in rows_to_keep]
+                ops_sheet.append_rows(remaining, value_input_option="USER_ENTERED")
+
+        return {
+            "месяц": month_name,
+            "год": year,
+            "записей": len(archive_rows),
+            "расходы": report["расходы"],
+            "доходы": report["доходы"],
+            "очищено": очищено
+        }
+
+    except Exception as e:
+        logger.error(f"Ошибка архивирования: {e}")
+        return {"ошибка": str(e)}
+
+
+def smart_query(text: str) -> dict:
+    """Отвечает на умные запросы из таблицы и архива."""
+    try:
+        from services.gemini_service import groq_client
+
+        if not groq_client:
+            return {"ошибка": "Groq недоступен"}
+
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+
+        # Читаем ОПЕРАЦИИ и АРХИВ
+        ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
+        ops_rows = ops_sheet.get_all_records()
+
+        try:
+            archive_sheet = spreadsheet.worksheet("АРХИВ")
+            archive_rows = archive_sheet.get_all_records()
+        except Exception:
+            archive_rows = []
+
+        # Готовим данные для Groq
+        ops_text = "\n".join([
+            f"{r.get('Дата','')} | {r.get('Тип операции','')} | {r.get('Сумма','')} | "
+            f"{r.get('Категория','')} | {r.get('Товар / Описание','')} | "
+            f"{r.get('Получатель / Отправитель','')}"
+            for r in ops_rows[:200]
+        ])
+
+        archive_text = "\n".join([
+            f"{r.get('Период','')} | {r.get('Категория','')} | {r.get('Тип','')} | {r.get('Сумма','')}"
+            for r in archive_rows[:200]
+        ])
+
+        prompt = f"""Ты финансовый помощник. Пользователь задал вопрос о своих финансах.
+Ответь на вопрос используя данные из таблиц. Будь краток и конкретен.
+Ответ давай на русском языке в формате Markdown.
+
+Вопрос: "{text}"
+
+ТЕКУЩИЕ ОПЕРАЦИИ (последние):
+{ops_text[:3000] if ops_text else "пусто"}
+
+АРХИВ (по месяцам):
+{archive_text[:2000] if archive_text else "пусто"}
+
+Примеры правильных ответов:
+- "От Алексея П. пришло **3 500 ₽** (7 переводов)"
+- "На продукты потрачено **12 450 ₽** за май"
+- "Доход за январь: **45 000 ₽**"
+
+Если данных нет — скажи об этом прямо."""
+
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        answer = response.choices[0].message.content.strip()
+        return {"ответ": answer}
+
+    except Exception as e:
+        logger.error(f"Ошибка smart_query: {e}")
+        return {"ошибка": str(e)}
