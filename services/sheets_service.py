@@ -20,6 +20,29 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+# Соответствие русских и английских названий месяцев
+MONTH_MAP = {
+    "январь": ["январь", "january", "jan"],
+    "февраль": ["февраль", "february", "feb"],
+    "март": ["март", "march", "mar"],
+    "апрель": ["апрель", "april", "apr"],
+    "май": ["май", "may"],
+    "июнь": ["июнь", "june", "jun"],
+    "июль": ["июль", "july", "jul"],
+    "август": ["август", "august", "aug"],
+    "сентябрь": ["сентябрь", "september", "sep"],
+    "октябрь": ["октябрь", "october", "oct"],
+    "ноябрь": ["ноябрь", "november", "nov"],
+    "декабрь": ["декабрь", "december", "dec"],
+}
+
+
+def month_matches(cell_value: str, target_month: str) -> bool:
+    """Проверяет, совпадает ли значение ячейки с нужным месяцем (рус/англ)."""
+    cell = cell_value.strip().lower()
+    variants = MONTH_MAP.get(target_month.lower(), [target_month.lower()])
+    return any(cell == v for v in variants)
+
 
 def get_sheets_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
@@ -136,7 +159,7 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
                 "", "", "",
                 str(confidence),
                 "Нет", status, "groq",
-                now.strftime("%d.%m.%Y %H:%M"),
+                now.strftime("%d.%m.%Y %H:%М"),
             ]
             rows.append(row)
 
@@ -189,7 +212,7 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             row_type = str(row.get("Тип операции", "")).lower()
 
             in_period = False
-            if row_month.lower() == target_month_name.lower() and str(target_year) in row_year:
+            if month_matches(row_month, target_month_name) and str(target_year) in row_year:
                 in_period = True
             elif row_date:
                 try:
@@ -300,7 +323,7 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
             row_date = str(row.get("Дата", ""))
             in_period = False
 
-            if row_month.lower() == month_name.lower() and str(year) in row_year:
+            if month_matches(row_month, month_name) and str(year) in row_year:
                 in_period = True
             elif row_date:
                 try:
@@ -340,6 +363,7 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         logger.error(f"Ошибка архивирования: {e}")
         return {"ошибка": str(e)}
 
+
 def smart_query(query_text: str) -> dict:
     try:
         client = get_sheets_client()
@@ -357,8 +381,8 @@ def smart_query(query_text: str) -> dict:
 
         raw_query = query_text.lower()
 
-        # 1. Распознавание месяцев
-        months_dict = {
+        # 1. Распознавание месяцев из запроса
+        months_query = {
             "январ": "январь", "феврал": "февраль", "март": "март",
             "апрел": "апрель", "мае": "май", "май": "май", "июн": "июнь",
             "июл": "июль", "август": "август", "сентябр": "сентябрь",
@@ -366,9 +390,9 @@ def smart_query(query_text: str) -> dict:
         }
 
         target_month = None
-        for ru_m, table_m in months_dict.items():
-            if ru_m in raw_query:
-                target_month = table_m
+        for key, val in months_query.items():
+            if key in raw_query:
+                target_month = val
                 break
 
         # 2. Очистка от знаков препинания
@@ -378,29 +402,28 @@ def smart_query(query_text: str) -> dict:
         # 3. Проверяем, ищем ли Алексея
         is_aleksey_search = "алекс" in raw_query
 
-        found_lines = []
-        total_amount = 0.0
-
-        # 4. Определяем индексы колонок
+        # 4. Определяем индексы колонок по частичному совпадению
         ops_headers = [h.strip().lower() for h in ops_rows[0]]
 
-        # Ищем колонки по частичному совпадению — это надёжнее
         def find_col(keywords, default):
             for i, h in enumerate(ops_headers):
                 if any(k in h for k in keywords):
                     return i
             return default
 
-        idx_date   = find_col(["дата"],          2)
-        idx_month  = find_col(["месяц", "month"], 4)
-        idx_type   = find_col(["тип"],            6)
-        idx_amount = find_col(["сумма"],          7)
-        idx_cat    = find_col(["категори"],       9)
+        idx_date   = find_col(["дата"],             2)
+        idx_month  = find_col(["месяц", "month"],   4)
+        idx_type   = find_col(["тип"],              6)
+        idx_amount = find_col(["сумма"],            7)
+        idx_cat    = find_col(["категори"],         9)
         idx_desc   = find_col(["товар", "описани"], 13)
-        idx_recv   = find_col(["получател"],      14)
+        idx_recv   = find_col(["получател"],        14)
+
+        found_lines = []
+        total_amount = 0.0
 
         for row in ops_rows[1:]:
-            # Дополняем строку пустыми значениями если она короткая
+            # Дополняем строку если она короче ожидаемого
             while len(row) <= max(idx_cat, idx_desc, idx_amount, idx_recv):
                 row.append("")
 
@@ -408,12 +431,12 @@ def smart_query(query_text: str) -> dict:
             desc_val  = row[idx_desc].lower()
             recv_val  = row[idx_recv].lower()
             t_val     = row[idx_type].lower()
-            row_month = row[idx_month].lower()
+            row_month = row[idx_month].strip()
 
             is_income_row = "доход" in t_val or "доход" in cat_val
 
-            # Фильтр по месяцу
-            if target_month and target_month not in row_month:
+            # Фильтр по месяцу — поддерживает и русский и английский
+            if target_month and not month_matches(row_month, target_month):
                 continue
 
             # Объединяем все текстовые поля для поиска
@@ -422,7 +445,7 @@ def smart_query(query_text: str) -> dict:
             match_found = False
 
             if is_aleksey_search:
-                # Ищем "алекс" в любом текстовом поле, только среди доходов
+                # Ищем "алекс" в любом поле, только среди доходов
                 if "алекс" in text_to_search and is_income_row:
                     match_found = True
 
@@ -434,7 +457,7 @@ def smart_query(query_text: str) -> dict:
                     amount_num = float(str(amount_str).replace(" ", "").replace(",", "."))
                     total_amount += amount_num
                 except ValueError:
-                    amount_num = 0.0
+                    pass
 
                 d_text = row[idx_desc] or row[idx_recv]
                 found_lines.append(f"📅 {date} | 💰 {amount_str} ₽ | _{d_text}_")
@@ -456,6 +479,3 @@ def smart_query(query_text: str) -> dict:
     except Exception as e:
         logger.error(f"Ошибка в smart_query: {e}")
         return {"ошибка": "Произошла ошибка при поиске. Попробуйте еще раз."}
-        
- 
-        
