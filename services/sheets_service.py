@@ -342,8 +342,8 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
 
 def smart_query(query_text: str) -> dict:
     """
-    Универсальный умный поиск. Защищен от путаницы между расходами на Яндекс 
-    (такси, маркет) и доходами от Алексея через Яндекс.
+    Упрощенный умный поиск. Ищет любые доходы по имени Алексей или через Яндекс,
+    не требуя ввода фамилии "П" или точек.
     """
     try:
         client = get_sheets_client()
@@ -379,26 +379,14 @@ def smart_query(query_text: str) -> dict:
         for char in [".", ",", "?", "!", "-", "/"]:
             raw_query = raw_query.replace(char, " ")
 
-        # 3. Выделяем поисковые слова
-        stop_words = ["сколько", "пришло", "потрачено", "было", "в", "на", "за", "рублей", "руб", "найти", "поиск", "от", "денег", "деньги", "перевод", "для", "муж", "бывший"]
+        # 3. Проверяем, ищем ли мы Алексея
+        is_aleksey_search = "алекс" in raw_query
+        
+        # Выделяем остальные поисковые слова (если ищем не Алексея)
+        stop_words = ["сколько", "пришло", "потрачено", "было", "в", "на", "за", "рублей", "руб", "найти", "поиск", "от", "денег", "деньги", "перевод", "для"]
         words = raw_query.split()
+        search_words = [w[:4] if len(w) > 3 else w for w in words if w not in stop_words and not any(m in w for m in months_dict)]
         
-        search_words = []
-        is_aleksey_search = False
-        
-        for w in words:
-            if w in stop_words or any(m in w for m in months_dict):
-                continue
-            if "алекс" in w or w == "п":
-                is_aleksey_search = True
-            if len(w) > 3:
-                search_words.append(w[:4])
-            else:
-                search_words.append(w)
-        
-        if not search_words:
-            return {"ответ": "Не понял предмет поиска. Напишите, например: 'Сколько пришло от Алексея?'"}
-            
         found_lines = []
         total_amount = 0.0
         
@@ -420,7 +408,7 @@ def smart_query(query_text: str) -> dict:
             t_val = row[idx_type].lower()
             row_month = row[idx_month].lower() if len(row) > idx_month else ""
             
-            # Определяем, расход это или доход по логике таблицы
+            # Признак того, что строка в таблице является ДОХОДОМ
             is_income_row = "доход" in t_val or "доход" in cat_val
             
             # Фильтр по месяцу
@@ -428,17 +416,18 @@ def smart_query(query_text: str) -> dict:
                 continue
                 
             text_to_search_clean = f"{cat_val} {desc_val}".replace(".", " ")
-            
             match_found = False
             
-            # Если ищем Алексея: подходят строки, где есть "алекс"/"п", ИЛИ строки с "яндекс", но ТОЛЬКО если это ДОХОД
+            # Если ищем Алексея
             if is_aleksey_search:
-                if "алекс" in text_to_search_clean or " п " in f" {text_to_search_clean} ":
+                # Нам подходят строки, где написано "алексей" ИЛИ строки с "яндекс" (но только приходы!)
+                if "алекс" in text_to_search_clean:
                     match_found = True
                 elif "яндекс" in text_to_search_clean and is_income_row:
                     match_found = True
-            # Обычный поиск по ключевым словам для остальных запросов
-            elif all(word in text_to_search_clean for word in search_words):
+            
+            # Обычный поиск по ключевым словам для других запросов
+            elif search_words and all(word in text_to_search_clean for word in search_words):
                 match_found = True
                 
             if match_found:
@@ -464,9 +453,7 @@ def smart_query(query_text: str) -> dict:
             return {"ответ": f"Ничего не нашлось по запросу «{query_text}»{month_print}"}
             
         month_str = f" за {target_month.title()}" if target_month else ""
-        
-        # Меняем заголовок в зависимости от того, искали Алексея или что-то другое
-        title_text = "Всего пришло от Алексея (Яндекс)" if is_aleksey_search else "Итоговый баланс по найденному"
+        title_text = "Всего пришло от Алексея (включая Яндекс)" if is_aleksey_search else "Итоговый баланс по найденному"
         
         lines = [
             f"🔍 Результаты по вашему запросу{month_str}:",
@@ -477,5 +464,5 @@ def smart_query(query_text: str) -> dict:
             
         return {"ответ": "\n".join(lines)}
     except Exception as e:
-        logger.error(f"Ошибка в smart_query: {e}")
+        logger.error(f"Ошибка in smart_query: {e}")
         return {"ошибка": "Произошла ошибка при поиске. Попробуйте еще раз."}
