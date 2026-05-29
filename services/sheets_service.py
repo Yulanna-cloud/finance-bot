@@ -342,7 +342,7 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
 
 def smart_query(query_text: str) -> dict:
     """
-    Оптимизированный и легкий поиск по операциям, защищенный от ошибок Google 500.
+    Оптимизированный поиск по операциям с корректным распознаванием русских месяцев.
     """
     try:
         client = get_sheets_client()
@@ -351,13 +351,11 @@ def smart_query(query_text: str) -> dict:
         ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
         archive_sheet = spreadsheet.worksheet("Архив")
         
-        # Читаем только заполненные ячейки (get_all_values без параметров может брать лишнее,
-        # поэтому берем get_values, который отсекает пустые виртуальные строки в конце)
         try:
             ops_rows = ops_sheet.get_values()
         except Exception as e:
             logger.error(f"Ошибка чтения ОПЕРАЦИЙ: {e}")
-            return {"ошибка": "Google Таблицы временно недоступны. Попробуйте еще раз через 5 секунд."}
+            return {"ошибка": "Google Таблицы временно недоступны. Попробуйте еще раз."}
             
         try:
             archive_rows = archive_sheet.get_values()
@@ -369,25 +367,29 @@ def smart_query(query_text: str) -> dict:
             
         raw_query = query_text.lower()
         
-        # 1. Словарь месяцев
+        # Словарь месяцев сопоставляем строго с русским написанием в вашей таблице
         months_dict = {
-            "январ": "january", "феврал": "february", "март": "march", 
-            "апрел": "april", "мае": "may", "май": "may", "июн": "june", 
-            "июл": "july", "август": "august", "сентябр": "september", 
-            "октябр": "october", "ноябр": "november", "декабр": "december"
+            "январ": "январь", "феврал": "февраль", "март": "март", 
+            "апрел": "апрель", "мае": "май", "май": "май", "июн": "июнь", 
+            "июл": "июль", "август": "август", "сентябр": "сентябрь", 
+            "октябр": "октябрь", "ноябр": "ноябрь", "декабр": "декабрь"
         }
         
         target_month = None
-        for ru_m, en_m in months_dict.items():
+        for ru_m, table_m in months_dict.items():
             if ru_m in raw_query:
-                target_month = en_m
+                target_month = table_m
                 break
 
-        # 2. Очистка от стоп-слов
+        # Очистка от стоп-слов
         stop_words = ["сколько", "пришло", "потрачено", "было", "в", "на", "за", "рублей", "руб", "найти", "поиск", "от", "денег"]
         words = raw_query.split()
         clean_words = [w for w in words if w not in stop_words and not any(m in w for m in months_dict)]
         search_keyword = " ".join(clean_words).strip() if clean_words else raw_query
+        
+        # Убираем знак вопроса в конце ключевого слова, если он остался
+        if search_keyword.endswith("?"):
+            search_keyword = search_keyword[:-1].strip()
         
         if not search_keyword:
             return {"ответ": "Не понял, что именно искать. Напишите, например: 'Сколько пришло от Алексея?'"}
@@ -395,7 +397,7 @@ def smart_query(query_text: str) -> dict:
         found_lines = []
         total_amount = 0.0
         
-        # 3. Поиск по ОПЕРАЦИЯМ
+        # Поиск по ОПЕРАЦИЯМ
         ops_headers = [h.strip().lower() for h in ops_rows[0]]
         idx_date = ops_headers.index("дата") if "дата" in ops_headers else 2
         idx_month = ops_headers.index("month") if "month" in ops_headers else 4
@@ -412,6 +414,7 @@ def smart_query(query_text: str) -> dict:
             desc_val = row[idx_desc].lower()
             row_month = row[idx_month].lower() if len(row) > idx_month else ""
             
+            # Проверяем совпадение по русскому названию месяца
             if target_month and target_month not in row_month:
                 continue
                 
@@ -435,10 +438,10 @@ def smart_query(query_text: str) -> dict:
                 found_lines.append(f"📅 {date} | {op_type} {amount_str} ₽ | {cat} | _{d_text}_")
 
         if not found_lines:
-            return {"ответ": f"Ничего не нашлось по запросу «{search_keyword}»" + (f" за май" if target_month == "may" else "")}
+            month_print = f" за месяц {target_month}" if target_month else ""
+            return {"ответ": f"Ничего не нашлось по запросу «{search_keyword}»{month_print}"}
             
-        # Формируем красивый ответ
-        month_str = " за Май" if target_month == "may" else ""
+        month_str = f" за {target_month.title()}" if target_month else ""
         lines = [
             f"🔍 Результаты по запросу «{search_keyword}»{month_str}:",
             f"📊 Итоговый баланс: **{total_amount:,.2f} ₽**",
@@ -450,4 +453,3 @@ def smart_query(query_text: str) -> dict:
     except Exception as e:
         logger.error(f"Ошибка в smart_query: {e}")
         return {"ошибка": "Произошла ошибка при поиске. Попробуйте еще раз."}
-
