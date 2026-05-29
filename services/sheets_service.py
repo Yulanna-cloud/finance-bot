@@ -342,14 +342,13 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
 
 def smart_query(query_text: str) -> dict:
     """
-    Оптимизированный поиск по операциям с корректным распознаванием русских месяцев.
+    Универсальный умный поиск. Защищен от путаницы между расходами на Яндекс 
+    (такси, маркет) и доходами от Алексея через Яндекс.
     """
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
-        
         ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
-        archive_sheet = spreadsheet.worksheet("Архив")
         
         try:
             ops_rows = ops_sheet.get_values()
@@ -357,17 +356,12 @@ def smart_query(query_text: str) -> dict:
             logger.error(f"Ошибка чтения ОПЕРАЦИЙ: {e}")
             return {"ошибка": "Google Таблицы временно недоступны. Попробуйте еще раз."}
             
-        try:
-            archive_rows = archive_sheet.get_values()
-        except Exception:
-            archive_rows = []
-            
         if not ops_rows or len(ops_rows) <= 1:
             return {"ответ": "В таблице пока нет операций."}
             
         raw_query = query_text.lower()
         
-        # Словарь месяцев сопоставляем строго с русским написанием в вашей таблице
+        # 1. Распознавание месяцев
         months_dict = {
             "январ": "январь", "феврал": "февраль", "март": "март", 
             "апрел": "апрель", "мае": "май", "май": "май", "июн": "июнь", 
@@ -381,23 +375,34 @@ def smart_query(query_text: str) -> dict:
                 target_month = table_m
                 break
 
-        # Очистка от стоп-слов
-        stop_words = ["сколько", "пришло", "потрачено", "было", "в", "на", "за", "рублей", "руб", "найти", "поиск", "от", "денег"]
+        # 2. Очистка запроса от знаков препинания
+        for char in [".", ",", "?", "!", "-", "/"]:
+            raw_query = raw_query.replace(char, " ")
+
+        # 3. Выделяем поисковые слова
+        stop_words = ["сколько", "пришло", "потрачено", "было", "в", "на", "за", "рублей", "руб", "найти", "поиск", "от", "денег", "деньги", "перевод", "для", "муж", "бывший"]
         words = raw_query.split()
-        clean_words = [w for w in words if w not in stop_words and not any(m in w for m in months_dict)]
-        search_keyword = " ".join(clean_words).strip() if clean_words else raw_query
         
-        # Убираем знак вопроса в конце ключевого слова, если он остался
-        if search_keyword.endswith("?"):
-            search_keyword = search_keyword[:-1].strip()
+        search_words = []
+        is_aleksey_search = False
         
-        if not search_keyword:
-            return {"ответ": "Не понял, что именно искать. Напишите, например: 'Сколько пришло от Алексея?'"}
+        for w in words:
+            if w in stop_words or any(m in w for m in months_dict):
+                continue
+            if "алекс" in w or w == "п":
+                is_aleksey_search = True
+            if len(w) > 3:
+                search_words.append(w[:4])
+            else:
+                search_words.append(w)
+        
+        if not search_words:
+            return {"ответ": "Не понял предмет поиска. Напишите, например: 'Сколько пришло от Алексея?'"}
             
         found_lines = []
         total_amount = 0.0
         
-        # Поиск по ОПЕРАЦИЯМ
+        # 4. Поиск по ОПЕРАЦИЯМ
         ops_headers = [h.strip().lower() for h in ops_rows[0]]
         idx_date = ops_headers.index("дата") if "дата" in ops_headers else 2
         idx_month = ops_headers.index("month") if "month" in ops_headers else 4
@@ -412,24 +417,41 @@ def smart_query(query_text: str) -> dict:
                 
             cat_val = row[idx_cat].lower()
             desc_val = row[idx_desc].lower()
+            t_val = row[idx_type].lower()
             row_month = row[idx_month].lower() if len(row) > idx_month else ""
             
-            # Проверяем совпадение по русскому названию месяца
+            # Определяем, расход это или доход по логике таблицы
+            is_income_row = "доход" in t_val or "доход" in cat_val
+            
+            # Фильтр по месяцу
             if target_month and target_month not in row_month:
                 continue
                 
-            if search_keyword in cat_val or search_keyword in desc_val:
+            text_to_search_clean = f"{cat_val} {desc_val}".replace(".", " ")
+            
+            match_found = False
+            
+            # Если ищем Алексея: подходят строки, где есть "алекс"/"п", ИЛИ строки с "яндекс", но ТОЛЬКО если это ДОХОД
+            if is_aleksey_search:
+                if "алекс" in text_to_search_clean or " п " in f" {text_to_search_clean} ":
+                    match_found = True
+                elif "яндекс" in text_to_search_clean and is_income_row:
+                    match_found = True
+            # Обычный поиск по ключевым словам для остальных запросов
+            elif all(word in text_to_search_clean for word in search_words):
+                match_found = True
+                
+            if match_found:
                 date = row[idx_date]
-                t_val = row[idx_type].lower()
-                op_type = "💸" if "расход" in t_val else "💰"
+                op_type = "💰" if is_income_row else "💸"
                 amount_str = row[idx_amount]
                 
                 try:
                     amount_num = float(str(amount_str).replace(" ", "").replace(",", "."))
-                    if "расход" in t_val:
-                        total_amount -= amount_num
-                    else:
+                    if is_income_row:
                         total_amount += amount_num
+                    else:
+                        total_amount -= amount_num
                 except ValueError:
                     amount_num = 0.0
                     
@@ -439,13 +461,17 @@ def smart_query(query_text: str) -> dict:
 
         if not found_lines:
             month_print = f" за месяц {target_month}" if target_month else ""
-            return {"ответ": f"Ничего не нашлось по запросу «{search_keyword}»{month_print}"}
+            return {"ответ": f"Ничего не нашлось по запросу «{query_text}»{month_print}"}
             
         month_str = f" за {target_month.title()}" if target_month else ""
+        
+        # Меняем заголовок в зависимости от того, искали Алексея или что-то другое
+        title_text = "Всего пришло от Алексея (Яндекс)" if is_aleksey_search else "Итоговый баланс по найденному"
+        
         lines = [
-            f"🔍 Результаты по запросу «{search_keyword}»{month_str}:",
-            f"📊 Итоговый баланс: **{total_amount:,.2f} ₽**",
-            "\n📋 Последние записи:"
+            f"🔍 Результаты по вашему запросу{month_str}:",
+            f"📊 {title_text}: **{total_amount:,.2f} ₽**",
+            "\n📋 Найденные записи (последние 5):"
         ]
         lines.extend(found_lines[-5:])
             
