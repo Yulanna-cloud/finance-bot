@@ -342,7 +342,7 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
 
 def smart_query(query_text: str) -> dict:
     """
-    Умный поиск по операциям, который умеет выделять имя/магазин и фильтровать по месяцу.
+    Оптимизированный и легкий поиск по операциям, защищенный от ошибок Google 500.
     """
     try:
         client = get_sheets_client()
@@ -351,19 +351,25 @@ def smart_query(query_text: str) -> dict:
         ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
         archive_sheet = spreadsheet.worksheet("Архив")
         
-        ops_rows = ops_sheet.get_all_values()
+        # Читаем только заполненные ячейки (get_all_values без параметров может брать лишнее,
+        # поэтому берем get_values, который отсекает пустые виртуальные строки в конце)
         try:
-            archive_rows = archive_sheet.get_all_values()
+            ops_rows = ops_sheet.get_values()
         except Exception as e:
-            logger.error(f"Не удалось прочитать лист Архив: {e}")
+            logger.error(f"Ошибка чтения ОПЕРАЦИЙ: {e}")
+            return {"ошибка": "Google Таблицы временно недоступны. Попробуйте еще раз через 5 секунд."}
+            
+        try:
+            archive_rows = archive_sheet.get_values()
+        except Exception:
             archive_rows = []
             
-        if len(ops_rows) <= 1 and len(archive_rows) <= 1:
+        if not ops_rows or len(ops_rows) <= 1:
             return {"ответ": "В таблице пока нет операций."}
             
         raw_query = query_text.lower()
         
-        # 1. Пытаемся определить, какой месяц ищет пользователь
+        # 1. Словарь месяцев
         months_dict = {
             "январ": "january", "феврал": "february", "март": "march", 
             "апрел": "april", "мае": "may", "май": "may", "июн": "june", 
@@ -377,79 +383,71 @@ def smart_query(query_text: str) -> dict:
                 target_month = en_m
                 break
 
-        # 2. Очищаем запрос от стоп-слов, чтобы вытащить суть (например, имя или магазин)
-        stop_words = ["сколько", "пришло", "потрачено", "было", "в", "на", "за", "рублей", "руб", "найти", "поиск", "от"]
+        # 2. Очистка от стоп-слов
+        stop_words = ["сколько", "пришло", "потрачено", "было", "в", "на", "за", "рублей", "руб", "найти", "поиск", "от", "денег"]
         words = raw_query.split()
         clean_words = [w for w in words if w not in stop_words and not any(m in w for m in months_dict)]
-        
-        # Если после очистки ничего не осталось, ищем по исходному тексту без стоп-слов
         search_keyword = " ".join(clean_words).strip() if clean_words else raw_query
         
         if not search_keyword:
-            return {"ответ": "Не понял, что именно искать. Напишите, например: 'Сколько ушло в Ашане?'"}
+            return {"ответ": "Не понял, что именно искать. Напишите, например: 'Сколько пришло от Алексея?'"}
             
         found_lines = []
         total_amount = 0.0
         
         # 3. Поиск по ОПЕРАЦИЯМ
-        if len(ops_rows) > 1:
-            ops_headers = [h.strip().lower() for h in ops_rows[0]]
-            
-            idx_date = ops_headers.index("дата") if "дата" in ops_headers else 2
-            idx_month = ops_headers.index("month") if "month" in ops_headers else 4
-            idx_type = ops_headers.index("тип") if "тип" in ops_headers else 6
-            idx_amount = ops_headers.index("сумма") if "сумма" in ops_headers else 7
-            idx_cat = ops_headers.index("категория") if "категория" in ops_headers else 9
-            
-            idx_desc = ops_headers.index("товар / описание") if "товар / описание" in ops_headers else (ops_headers.index("описание") if "описание" in ops_headers else 13)
-            
-            for row in ops_rows[1:]:
-                cat_val = row[idx_cat].lower() if len(row) > idx_cat else ""
-                desc_val = row[idx_desc].lower() if len(row) > idx_desc else ""
-                row_month = row[idx_month].lower() if len(row) > idx_month else ""
+        ops_headers = [h.strip().lower() for h in ops_rows[0]]
+        idx_date = ops_headers.index("дата") if "дата" in ops_headers else 2
+        idx_month = ops_headers.index("month") if "month" in ops_headers else 4
+        idx_type = ops_headers.index("тип") if "тип" in ops_headers else 6
+        idx_amount = ops_headers.index("сумма") if "сумма" in ops_headers else 7
+        idx_cat = ops_headers.index("категория") if "категория" in ops_headers else 9
+        idx_desc = ops_headers.index("товар / описание") if "товар / описание" in ops_headers else 13
+        
+        for row in ops_rows[1:]:
+            if not row or len(row) <= max(idx_cat, idx_desc, idx_amount):
+                continue
                 
-                # Если указан месяц, проверяем совпадение по месяцу
-                if target_month and target_month not in row_month:
-                    continue
+            cat_val = row[idx_cat].lower()
+            desc_val = row[idx_desc].lower()
+            row_month = row[idx_month].lower() if len(row) > idx_month else ""
+            
+            if target_month and target_month not in row_month:
+                continue
+                
+            if search_keyword in cat_val or search_keyword in desc_val:
+                date = row[idx_date]
+                t_val = row[idx_type].lower()
+                op_type = "💸" if "расход" in t_val else "💰"
+                amount_str = row[idx_amount]
+                
+                try:
+                    amount_num = float(str(amount_str).replace(" ", "").replace(",", "."))
+                    if "расход" in t_val:
+                        total_amount -= amount_num
+                    else:
+                        total_amount += amount_num
+                except ValueError:
+                    amount_num = 0.0
                     
-                # Ищем ключевое слово в описании или категории
-                if search_keyword in cat_val or search_keyword in desc_val:
-                    date = row[idx_date] if len(row) > idx_date else "—"
-                    t_val = row[idx_type].lower() if len(row) > idx_type else "расход"
-                    op_type = "💸" if "расход" in t_val else "💰"
-                    amount_str = row[idx_amount] if len(row) > idx_amount else "0"
-                    
-                    try:
-                        amount_num = float(str(amount_str).replace(" ", "").replace(",", "."))
-                        if "расход" in t_val:
-                            total_amount -= amount_num
-                        else:
-                            total_amount += amount_num
-                    except ValueError:
-                        amount_num = 0.0
-                        
-                    cat = row[idx_cat] if len(row) > idx_cat else "Прочее"
-                    d_text = row[idx_desc] if len(row) > idx_desc else ""
-                    found_lines.append(f"📅 {date} | {op_type} {amount_str} ₽ | {cat} | _{d_text}_")
+                cat = row[idx_cat]
+                d_text = row[idx_desc]
+                found_lines.append(f"📅 {date} | {op_type} {amount_str} ₽ | {cat} | _{d_text}_")
 
         if not found_lines:
-            return {"ответ": f"Ничего не нашлось по ключевому слову «{search_keyword}»" + (f" за месяц {target_month}" if target_month else "")}
+            return {"ответ": f"Ничего не нашлось по запросу «{search_keyword}»" + (f" за май" if target_month == "may" else "")}
             
-        # Формируем итоговый красивый ответ
-        month_ru_print = [k for k, v in months_dict.items() if v == target_month]
-        month_str = f" за {month_ru_print[0]}".title() if month_ru_print else ""
-        
+        # Формируем красивый ответ
+        month_str = " за Май" if target_month == "may" else ""
         lines = [
             f"🔍 Результаты по запросу «{search_keyword}»{month_str}:",
-            f"📊 Итоговый баланс по найденному: **{total_amount:,.2f} ₽**\n",
-            "📋 Последние записи:"
+            f"📊 Итоговый баланс: **{total_amount:,.2f} ₽**",
+            "\n📋 Последние записи:"
         ]
-        # Выводим последние 5 записей
         lines.extend(found_lines[-5:])
             
         return {"ответ": "\n".join(lines)}
     except Exception as e:
         logger.error(f"Ошибка в smart_query: {e}")
-        return {"ошибка": str(e)}
-
+        return {"ошибка": "Произошла ошибка при поиске. Попробуйте еще раз."}
 
