@@ -340,66 +340,67 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         logger.error(f"Ошибка архивирования: {e}")
         return {"ошибка": str(e)}
 
-
-def smart_query(text: str) -> dict:
-    """Отвечает на умные запросы из таблицы и архива."""
+def smart_query(query_text: str) -> dict:
+    """
+    Умный поиск по операциям и архиву с правильными заголовками вашей таблицы.
+    """
     try:
-        from services.gemini_service import groq_client
-
-        if not groq_client:
-            return {"ошибка": "Groq недоступен"}
-
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
-
-        ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
-        ops_rows = ops_sheet.get_all_records()
-
-        try:
-            archive_sheet = spreadsheet.worksheet("АРХИВ")
-            archive_rows = archive_sheet.get_all_records()
-        except Exception:
-            archive_rows = []
-
-        ops_text = "\n".join([
-            f"{r.get('Дата','')} | {r.get('Тип операции','')} | {r.get('Сумма','')} | "
-            f"{r.get('Категория','')} | {r.get('Товар / Описание','')} | "
-            f"{r.get('Получатель / Отправитель','')}"
-            for r in ops_rows[:200]
-        ])
-
-        archive_text = "\n".join([
-            f"{r.get('Период','')} | {r.get('Категория','')} | {r.get('Тип','')} | {r.get('Сумма','')}"
-            for r in archive_rows[:200]
-        ])
-
-        prompt = f"""Ты финансовый помощник. Пользователь задал вопрос о своих финансах.
-Ответь на вопрос используя данные из таблиц. Будь краток и конкретен.
-Ответ давай на русском языке в формате Markdown.
-
-Вопрос: "{text}"
-
-ТЕКУЩИЕ ОПЕРАЦИИ:
-{ops_text[:3000] if ops_text else "пусто"}
-
-АРХИВ (итоги по месяцам):
-{archive_text[:2000] if archive_text else "пусто"}
-
-Примеры правильных ответов:
-- "От Алексея П. пришло **3 500 ₽** (7 переводов)"
-- "На продукты потрачено **12 450 ₽** за май"
-- "Доход за январь: **45 000 ₽**"
-
-Если данных нет — скажи об этом прямо."""
-
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        answer = response.choices[0].message.content.strip()
-        return {"ответ": answer}
-
-    except Exception as e:
-        logger.error(f"Ошибка smart_query: {e}")
-        return {"ошибка": str(e)}
         
+        ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
+        archive_sheet = spreadsheet.worksheet("Архив") # Имя листа с большой буквы
+        
+        # 1. Заголовки для листа ОПЕРАЦИИ (23 колонки)
+        expected_ops = ["ID", "Group ID", "Дата", "Время", "Month", "Year", "Тип", "Сумма", "Валюта", "Категория", "Подкатегория", "Магазин", "Товар / Описание", "Получатель", "Способ оплаты", "Статус оплаты", "Источник", "Исходный текст", "Confidence", "Confirmed", "Статус", "Проверил", "Дата проверки"]
+        
+        # 2. Реальные заголовки вашего листа Архив (8 колонок)
+        expected_archive = ["Период", "Год", "Месяц", "Категория", "Тип", "Сумма", "Количество операций", "Дата архивирования"]
+        
+        ops_rows = ops_sheet.get_all_records(expected_headers=expected_ops)
+        try:
+            archive_rows = archive_sheet.get_all_records(expected_headers=expected_archive)
+        except Exception as e:
+            logger.error(f"Не удалось прочитать лист Архив: {e}")
+            archive_rows = []
+            
+        query_lower = query_text.lower()
+        found_lines = []
+        
+        # Поиск в активных ОПЕРАЦИЯХ
+        for row in ops_rows:
+            category = str(row.get("Категория", "")).lower()
+            desc = str(row.get("Товар / Описание", "")).lower()
+            
+            if query_lower in category or query_lower in desc:
+                date = row.get("Дата", "—")
+                op_type = "💸" if row.get("Тип") == "расход" else "💰"
+                amount = row.get("Сумма", "0")
+                cat = row.get("Категория", "Прочее")
+                d_text = row.get("Товар / Описание", "")
+                found_lines.append(f"📅 {date} | {op_type} {amount} ₽ | {cat} | _{d_text}_")
+                
+        # Поиск в АРХИВЕ (тут структура проще, ищем по Категории)
+        for row in archive_rows:
+            category = str(row.get("Категория", "")).lower()
+            if query_lower in category:
+                period = row.get("Период", "—")
+                op_type = "💸" if row.get("Тип") == "расход" else "💰"
+                amount = row.get("Сумма", "0")
+                cat = row.get("Категория", "Прочее")
+                found_lines.append(f"🗄️ Архив ({period}) | {op_type} {amount} ₽ | {cat}")
+
+        if not found_lines:
+            return {"ответ": f"Ничего не нашлось по запросу «{query_text}»"}
+            
+        # Формируем красивый текстовый ответ (последние 5 записей)
+        lines = [f"🔍 Результаты по запросу «{query_text}» (последние 5):"]
+        lines.extend(found_lines[-5:])
+            
+        return {"ответ": "\n".join(lines)}
+    except Exception as e:
+        logger.error(f"Ошибка в smart_query: {e}")
+        return {"ошибка": str(e)}
+
+
+
