@@ -2,7 +2,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from services.sheets_service import write_operation as append_rows, smart_query
-from services.llm_service import parse_expense_with_llm
+from services.gemini_service import classify_text as parse_expense_with_llm
 
 logger = logging.getLogger(__name__)
 
