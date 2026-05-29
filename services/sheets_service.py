@@ -466,7 +466,8 @@ def smart_query(query_text: str) -> dict:
     except Exception as e:
         logger.error(f"Ошибка in smart_query: {e}")
         return {"ошибка": "Произошла ошибка при поиске. Попробуйте еще раз."}
-        def append_rows(row_data):
+        
+      def append_rows(row_data):
     """Добавляет строку в таблицу."""
     return write_operation(row_data)
         
