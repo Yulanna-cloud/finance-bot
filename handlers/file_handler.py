@@ -52,6 +52,45 @@ def family_category(name: str, op_type: str) -> str:
     return "Семья"
 
 
+def clean_shop_name(raw: str) -> str:
+    """Очищает название магазина/ИП из выписки Сбербанка.
+    Убирает дату, код авторизации, город, RUS, номер карты, 'Операция по...'
+    Пример: '26.05.2026 190676 IP EFIMOVA STERLITAMAK RUS. Операция по карте ****0105'
+         -> 'IP Efimova'
+    """
+    s = raw.strip()
+    # Убираем дату и код авторизации в начале: "26.05.2026 190676 "
+    s = re.sub(r^\d{2}\.\d{2}\.\d{4}\s+\d{4,8}\s+, "", s).strip()
+    # Убираем всё после точки где начинается "Операция"
+    s = re.sub(r"\.\s*Операция.*", "", s, flags=re.IGNORECASE).strip()
+    # Убираем город и RUS в конце
+    s = re.sub(r"\s+(STERLITAMAK|MOSCOW|SPB|KAZAN|UFA|RUS).*", "", s, flags=re.IGNORECASE).strip()
+    # Убираем "Операция по карте ****XXXX" если осталось
+    s = re.sub(r"Операция.*", "", s, flags=re.IGNORECASE).strip()
+    # Красиво — первая буква заглавная у каждого слова
+    return s.title() if s else raw.strip()
+
+
+
+
+def clean_shop_name(raw: str) -> str:
+    """Очищает название магазина/ИП из выписки Сбербанка.
+    Убирает дату, код авторизации, город, RUS, номер карты, 'Операция по...'
+    Пример: '26.05.2026 190676 IP EFIMOVA STERLITAMAK RUS. Операция по карте ****0105'
+         -> 'Ip Efimova'
+    """
+    s = raw.strip()
+    # Убираем дату и код авторизации в начале: "26.05.2026 190676 "
+    s = re.sub(r'^\d{2}\.\d{2}\.\d{4}\s+\d{4,8}\s+', '', s).strip()
+    # Убираем всё начиная с ". Операция"
+    s = re.sub(r'\.\s*Операция.*', '', s, flags=re.IGNORECASE).strip()
+    # Убираем город и RUS в конце
+    s = re.sub(r'\s+(STERLITAMAK|MOSCOW|SPB|KAZAN|UFA|RUS)\b.*', '', s, flags=re.IGNORECASE).strip()
+    # Убираем "Операция" если осталось
+    s = re.sub(r'Операция.*', '', s, flags=re.IGNORECASE).strip()
+    # Title case
+    return s.title() if s else raw.strip()
+
 def parse_sber_pdf(pdf_bytes: bytes) -> list:
     """
     Парсер выписки Сбербанка.
@@ -245,11 +284,7 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             continue
 
         # ── 7. Магазины и кафе ─────────────────────────────────────────────
-        clean_desc = re.sub(
-            r'\s*(STERLITAMAK|MOSCOW|SPB|RUS)\b.*', '', desc, flags=re.IGNORECASE
-        ).strip()
-        # Убираем лишнее "Операция по карте ****XXXX"
-        clean_desc = re.sub(r'\.\s*Операция.*$', '', clean_desc, flags=re.IGNORECASE).strip()
+        clean_desc = clean_shop_name(desc)
 
         sber_cat_lower = sber_cat.lower()
         if "ресторан" in sber_cat_lower or "кафе" in sber_cat_lower:
