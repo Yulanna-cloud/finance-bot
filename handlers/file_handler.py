@@ -1,7 +1,6 @@
 """
 Обработчик файлов банковских выписок.
-Поддерживает CSV, Excel и PDF от Сбербанка.
-Парсинг PDF — собственный код без ИИ, чтобы правила всегда соблюдались точно.
+PDF Сбербанка парсится собственным кодом без ИИ.
 """
 
 import logging
@@ -19,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 MAX_OPERATIONS = 200
 
-# ─── Продуктовые супермаркеты — пропускаем полностью ─────────────────────────
 SKIP_MERCHANTS = [
     "pyaterochka", "krasnoe", "beloe", "magnit", "lenta",
     "perekrestok", "dixi", "spar", "пятерочка", "магнит",
@@ -27,7 +25,6 @@ SKIP_MERCHANTS = [
     "светофор", "монеточка", "вкусвилл", "окей", "fix price", "самокат",
 ]
 
-# ─── Члены семьи ──────────────────────────────────────────────────────────────
 FAMILY_NAMES = {
     "маргарита":  "Маргарита П.",
     "диана":      "Диана Ш.",
@@ -39,8 +36,7 @@ FAMILY_NAMES = {
     "ольга г":    "Ольга Г.",
 }
 
-def normalize_family_name(raw: str) -> str | None:
-    """Если строка содержит имя члена семьи — вернуть нормализованное имя."""
+def normalize_family_name(raw: str):
     r = raw.lower()
     for key, val in FAMILY_NAMES.items():
         if key in r:
@@ -50,16 +46,25 @@ def normalize_family_name(raw: str) -> str | None:
 def family_category(name: str, op_type: str) -> str:
     n = name.lower()
     if "маргарита" in n or "диана" in n:
-        return "Дети"      if op_type == "расход" else "Доход"
+        return "Дети" if op_type == "расход" else "Доход"
     if "алексей" in n:
-        return "Переводы"  if op_type == "расход" else "Доход"
+        return "Переводы" if op_type == "расход" else "Доход"
     return "Семья"
 
 
 def parse_sber_pdf(pdf_bytes: bytes) -> list:
     """
-    Собственный парсер PDF-выписки Сбербанка.
-    Не использует ИИ — читает строки напрямую и применяет правила в коде.
+    Парсер выписки Сбербанка.
+    
+    Формат блока в PDF (после извлечения текста):
+      Строка A: "28.05.2026 06:49 Прочие операции 500,00 88,59"
+                 дата  время  категория_сбера  СУММА  остаток
+      Строка B: "28.05.2026 398873 Яндекс. Операция по счету ****4953"
+                 дата_обработки  код  ОПИСАНИЕ
+    
+    Сумма — это ПЕРВОЕ число в конце строки A (перед остатком).
+    Остаток — ВТОРОЕ число в конце строки A (последнее).
+    Знак + перед суммой = доход, без знака = расход.
     """
     try:
         import pypdf
@@ -74,169 +79,200 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
         logger.error(f"Ошибка чтения PDF: {e}")
         return []
 
-    logger.info(f"PDF прочитан, символов: {len(full_text)}")
+    logger.info(f"PDF текст ({len(full_text)} символов):\n{full_text[:2000]}")
 
-    # Разбиваем на блоки операций.
-    # Каждый блок начинается со строки вида "26.05.2026 13:35 Категория сумма"
-    # Следующая строка — описание операции
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
-    # Паттерн первой строки блока: дата время категория сумма
-    # Например: "26.05.2026 13:35 Рестораны и кафе 218,00"
-    block_pattern = re.compile(
-        r'^(\d{2}\.\d{2}\.\d{4})\s+'     # дата
-        r'\d{2}:\d{2}\s+'                 # время
-        r'(.+?)\s+'                        # категория сбера
-        r'([+\-]?\s*[\d\s]+[,\.]\d{2})$' # сумма
+    # Паттерн строки A: дата время категория ... сумма остаток
+    # Пример: "28.05.2026 06:49 Прочие операции 500,00 88,59"
+    # Пример с +: "27.05.2026 18:02 Перевод СБП +500,00 4 188,59"
+    line_a_re = re.compile(
+        r'^(\d{2}\.\d{2}\.\d{4})\s+'   # дата операции
+        r'\d{2}:\d{2}\s+'               # время
+        r'(.+?)\s+'                     # категория сбера
+        r'([+\-]?[\d\s]+[,\.]\d{2})'   # сумма операции (может быть +/-)
+        r'\s+[\d\s]+[,\.]\d{2}$'       # остаток (последнее число — игнорируем)
+    )
+
+    # Паттерн строки B: дата_обработки код_авторизации описание
+    # Пример: "28.05.2026 398873 Яндекс. Операция по счету ****4953"
+    line_b_re = re.compile(
+        r'^\d{2}\.\d{2}\.\d{4}\s+\d{4,8}\s+(.+)$'
     )
 
     operations = []
     i = 0
     while i < len(lines):
-        m = block_pattern.match(lines[i])
-        if m:
-            date_str  = m.group(1)          # "26.05.2026"
-            sber_cat  = m.group(2).strip()  # "Рестораны и кафе"
-            amount_str = m.group(3).strip() # "+1 000,00" или "218,00"
+        m_a = line_a_re.match(lines[i])
+        if not m_a:
+            i += 1
+            continue
 
-            # Следующая строка — описание операции
-            desc = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        date_str  = m_a.group(1)
+        sber_cat  = m_a.group(2).strip()
+        amount_raw = m_a.group(3).strip()
 
-            i += 2  # переходим к следующему блоку
-
-            # ── Определяем знак суммы ──────────────────────────────────────
-            is_income = amount_str.startswith("+")
-            clean_amount = re.sub(r'[+\-\s]', '', amount_str).replace(',', '.')
-            try:
-                amount = float(clean_amount)
-            except ValueError:
-                continue
-            if amount <= 0:
-                continue
-
-            desc_lower = desc.lower()
-
-            # ── 1. Внутренние переброски между своими счетами ──────────────
-            if any(m in desc_lower for m in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
-                operations.append({
-                    "дата": date_str,
-                    "сумма": amount,
-                    "тип": "между счетами",
-                    "категория": "Между счетами",
-                    "подкатегория": "",
-                    "магазин": "",
-                    "описание": "Переброска между своими счетами",
-                    "получатель": "",
-                    "уверенность": 1.0,
-                })
-                continue
-
-            # ── 2. Пропускаем "Без идентификации" ─────────────────────────
-            if "без идентификации" in desc_lower:
-                continue
-
-            # ── 3. Продуктовые супермаркеты — пропускаем ──────────────────
-            if any(s in desc_lower for s in SKIP_MERCHANTS):
-                logger.info(f"Пропускаем супермаркет: {desc}")
-                continue
-
-            # ── 4. Наличные (банкомат) ─────────────────────────────────────
-            if "atm" in desc_lower or "банкомат" in desc_lower or "выдача наличных" in desc_lower or sber_cat.lower() == "выдача наличных":
-                operations.append({
-                    "дата": date_str,
-                    "сумма": amount,
-                    "тип": "наличные",
-                    "категория": "Наличные",
-                    "подкатегория": "",
-                    "магазин": desc,
-                    "описание": "",
-                    "получатель": "",
-                    "уверенность": 1.0,
-                })
-                continue
-
-            # ── 5. Определяем тип операции ────────────────────────────────
-            op_type = "доход" if is_income else "расход"
-
-            # ── 6. Переводы людям (ищем паттерн "Перевод от/для Имя") ─────
-            recv = ""
-            shop = ""
-            category = ""
-
-            transfer_match = re.search(
-                r'перевод\s+(?:от|для|для\s+\w+\.)\s+(.+?)(?:\.|$)',
-                desc_lower
-            )
-            yandex_match = "яндекс" in desc_lower
-
-            if yandex_match:
-                if is_income:
-                    recv = "Алексей П."
-                    category = "Доход"
-                else:
-                    shop = "Яндекс"
-                    category = "Подписки"
-
-            elif transfer_match or "перевод" in desc_lower:
-                # Извлекаем имя получателя/отправителя из описания
-                # Паттерны Сбера: "Перевод для П. Маргарита Алексеевна"
-                #                  "Перевод от Ш. Диана Александровна"
-                name_match = re.search(
-                    r'(?:от|для)\s+(?:\w+\.\s+)?([А-ЯЁа-яё]+(?:\s+[А-ЯЁа-яё]+)*)',
-                    desc, re.IGNORECASE
-                )
-                raw_name = name_match.group(1).strip() if name_match else ""
-                family = normalize_family_name(raw_name) if raw_name else None
-
-                if family:
-                    recv = family
-                    category = family_category(family, op_type)
-                elif raw_name:
-                    # Не семья — частник/ИП → в магазин
-                    parts = raw_name.split()
-                    if len(parts) >= 2:
-                        shop = f"{parts[0]} {parts[1][0]}."
-                    else:
-                        shop = raw_name
-                    category = "Переводы" if op_type == "расход" else "Доход"
-                else:
-                    category = "Переводы" if op_type == "расход" else "Доход"
-
+        # Описание — следующая строка (строка B)
+        desc = ""
+        if i + 1 < len(lines):
+            m_b = line_b_re.match(lines[i + 1])
+            if m_b:
+                desc = m_b.group(1).strip()
+                i += 2
             else:
-                # ── 7. Магазины, кафе и прочее ────────────────────────────
-                # Убираем "ГОРОД RUS" из названия
-                clean_desc = re.sub(r'\s+(?:STERLITAMAK|MOSCOW|SPB|RUS)\s*$', '', desc, flags=re.IGNORECASE).strip()
-                shop = clean_desc
-
-                sber_cat_lower = sber_cat.lower()
-                if "ресторан" in sber_cat_lower or "кафе" in sber_cat_lower:
-                    category = "Кафе"
-                elif "одежда" in sber_cat_lower or "аксессуар" in sber_cat_lower:
-                    category = "Одежда"
-                elif "транспорт" in sber_cat_lower:
-                    category = "Транспорт"
-                elif "медицин" in sber_cat_lower or "аптека" in sber_cat_lower:
-                    category = "Медицина"
-                elif "дом" in sber_cat_lower:
-                    category = "Дом"
-                elif "супермаркет" in sber_cat_lower:
-                    category = "Продукты"
-                else:
-                    category = "Прочее"
-
-            operations.append({
-                "дата": date_str,
-                "сумма": amount,
-                "тип": op_type,
-                "категория": category,
-                "подкатегория": "",
-                "магазин": shop,
-                "описание": "",
-                "получатель": recv,
-                "уверенность": 1.0,
-            })
+                i += 1
         else:
             i += 1
+
+        # Знак и сумма
+        is_income = amount_raw.startswith("+")
+        clean_amount = re.sub(r'[+\-\s]', '', amount_raw).replace(',', '.')
+        try:
+            amount = float(clean_amount)
+        except ValueError:
+            continue
+        if amount <= 0:
+            continue
+
+        desc_lower = desc.lower()
+        op_type = "доход" if is_income else "расход"
+
+        recv = ""      # получатель (семья)
+        shop = ""      # магазин / отправитель
+        sender = ""    # отправитель (для доходов)
+        category = ""
+
+        # ── 1. Переброски между своими счетами ────────────────────────────
+        if any(m in desc_lower for m in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
+            operations.append({
+                "дата": date_str, "сумма": amount,
+                "тип": "между счетами", "категория": "Между счетами",
+                "подкатегория": "", "магазин": "", "описание": "Переброска между своими счетами",
+                "получатель": "", "отправитель": "", "уверенность": 1.0,
+            })
+            continue
+
+        # ── 2. Пропускаем "Без идентификации" ─────────────────────────────
+        if "без идентификации" in desc_lower:
+            continue
+
+        # ── 3. Продуктовые супермаркеты — пропускаем ──────────────────────
+        if any(s in desc_lower for s in SKIP_MERCHANTS):
+            logger.info(f"Пропускаем супермаркет: {desc}")
+            continue
+
+        # ── 4. Наличные (банкомат) ─────────────────────────────────────────
+        if "atm" in desc_lower or "выдача наличных" in sber_cat.lower():
+            clean_desc = re.sub(
+                r'\s*(STERLITAMAK|MOSCOW|SPB|RUS)\b.*', '', desc, flags=re.IGNORECASE
+            ).strip()
+            operations.append({
+                "дата": date_str, "сумма": amount,
+                "тип": "наличные", "категория": "Наличные",
+                "подкатегория": "", "магазин": clean_desc, "описание": "",
+                "получатель": "", "отправитель": "", "уверенность": 1.0,
+            })
+            continue
+
+        # ── 5. Яндекс ──────────────────────────────────────────────────────
+        if "яндекс" in desc_lower:
+            if is_income:
+                sender   = "Алексей П."
+                category = "Доход"
+                op_type  = "доход"
+            else:
+                shop     = "Яндекс"
+                category = "Подписки"
+                op_type  = "расход"
+            operations.append({
+                "дата": date_str, "сумма": amount,
+                "тип": op_type, "категория": category,
+                "подкатегория": "", "магазин": shop, "описание": "",
+                "получатель": "", "отправитель": sender, "уверенность": 1.0,
+            })
+            continue
+
+        # ── 6. Переводы людям ──────────────────────────────────────────────
+        # Паттерны Сбера:
+        #   "Перевод для П. Маргарита Алексеевна. Операция..."
+        #   "Перевод от Ш. Диана Александровна. Операция..."
+        #   "Перевод от П. Алексей Георгиевич. Операция..."
+        transfer_re = re.compile(
+            r'перевод\s+(?:для|от)\s+'
+            r'(?:[А-ЯЁа-яё]\.\s+)?'           # необязательная первая буква фамилии
+            r'([А-ЯЁа-яё][а-яё]+(?:\s+[А-ЯЁа-яё][а-яё]+)*)',  # имя [отчество]
+            re.IGNORECASE
+        )
+        tr_match = transfer_re.search(desc)
+
+        if tr_match or "перевод" in desc_lower or "перевод сбп" in sber_cat.lower() or "перевод с карты" in sber_cat.lower():
+            raw_name = tr_match.group(1).strip() if tr_match else ""
+            family = normalize_family_name(raw_name) if raw_name else None
+
+            if family:
+                if is_income:
+                    # Деньги пришли от члена семьи
+                    sender   = family
+                    category = family_category(family, "доход")
+                    op_type  = "доход"
+                else:
+                    # Перевели члену семьи
+                    recv     = family
+                    category = family_category(family, "расход")
+                    op_type  = "расход"
+            else:
+                # Не семья — частник/ИП
+                if raw_name:
+                    parts = raw_name.split()
+                    short = f"{parts[0]} {parts[1][0]}." if len(parts) >= 2 else raw_name
+                    if is_income:
+                        sender   = short
+                        category = "Доход"
+                        op_type  = "доход"
+                    else:
+                        shop     = short
+                        category = "Переводы"
+                        op_type  = "расход"
+                else:
+                    category = "Доход" if is_income else "Переводы"
+
+            operations.append({
+                "дата": date_str, "сумма": amount,
+                "тип": op_type, "категория": category,
+                "подкатегория": "", "магазин": shop, "описание": "",
+                "получатель": recv, "отправитель": sender, "уверенность": 1.0,
+            })
+            continue
+
+        # ── 7. Магазины и кафе ─────────────────────────────────────────────
+        clean_desc = re.sub(
+            r'\s*(STERLITAMAK|MOSCOW|SPB|RUS)\b.*', '', desc, flags=re.IGNORECASE
+        ).strip()
+        # Убираем лишнее "Операция по карте ****XXXX"
+        clean_desc = re.sub(r'\.\s*Операция.*$', '', clean_desc, flags=re.IGNORECASE).strip()
+
+        sber_cat_lower = sber_cat.lower()
+        if "ресторан" in sber_cat_lower or "кафе" in sber_cat_lower:
+            category = "Кафе"
+        elif "одежда" in sber_cat_lower or "аксессуар" in sber_cat_lower:
+            category = "Одежда"
+        elif "транспорт" in sber_cat_lower:
+            category = "Транспорт"
+        elif "медицин" in sber_cat_lower or "аптека" in sber_cat_lower:
+            category = "Медицина"
+        elif "дом" in sber_cat_lower:
+            category = "Дом"
+        elif "супермаркет" in sber_cat_lower:
+            category = "Продукты"
+        else:
+            category = "Прочее"
+
+        operations.append({
+            "дата": date_str, "сумма": amount,
+            "тип": op_type, "категория": category,
+            "подкатегория": "", "магазин": clean_desc, "описание": "",
+            "получатель": "", "отправитель": "", "уверенность": 1.0,
+        })
 
     logger.info(f"Распознано операций: {len(operations)}")
     return operations
@@ -284,8 +320,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not operations:
             await update.message.reply_text(
-                "❌ Не нашла операций для записи.\n"
-                "Возможно все операции — продуктовые магазины или переброски между счетами."
+                "❌ Не нашла операций.\n"
+                "Возможно все — продуктовые магазины или переброски между счетами."
             )
             return
 
@@ -298,9 +334,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for op in operations[:10]:
             тип = op.get("тип", "")
             emoji = {"доход": "💰", "между счетами": "🔄", "наличные": "🏧"}.get(тип, "💸")
-            показать = op.get("получатель") or op.get("магазин") or op.get("описание") or "—"
+            показать = op.get("отправитель") or op.get("получатель") or op.get("магазин") or "—"
             preview_lines.append(
-                f"{emoji} {показать[:40]} — {op['сумма']:,.0f} ₽ ({op.get('категория', '')})"
+                f"{emoji} {показать[:35]} — {op['сумма']:,.0f} ₽ ({op.get('категория', '')})"
             )
         if len(operations) > 10:
             preview_lines.append(f"_...и ещё {len(operations) - 10} операций_")
