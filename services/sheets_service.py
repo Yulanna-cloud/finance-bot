@@ -6,7 +6,7 @@ import os
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import gspread
 from google.oauth2.service_account import Credentials
@@ -19,6 +19,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
+
+# Часовой пояс Уфа = UTC+5
+UFA_TZ = timezone(timedelta(hours=5))
 
 # Соответствие русских и английских названий месяцев
 MONTH_MAP = {
@@ -35,6 +38,18 @@ MONTH_MAP = {
     "ноябрь": ["ноябрь", "november", "nov"],
     "декабрь": ["декабрь", "december", "dec"],
 }
+
+# Русские названия месяцев для записи в таблицу
+MONTH_NAMES_RU = {
+    1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+    5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+    9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+}
+
+
+def now_ufa() -> datetime:
+    """Возвращает текущее время по Уфе (UTC+5)."""
+    return datetime.now(tz=UFA_TZ)
 
 
 def month_matches(cell_value: str, target_month: str) -> bool:
@@ -66,7 +81,7 @@ def get_next_op_id(sheet) -> str:
         last_num = max(int(x.replace("OP-", "")) for x in op_ids)
         return f"OP-{last_num + 1:04d}"
     except Exception:
-        return f"OP-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        return f"OP-{now_ufa().strftime('%Y%m%d%H%M%S')}"
 
 
 def write_operation(operation: dict, source: str = "telegram") -> bool:
@@ -75,10 +90,10 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
 
-        now = datetime.now()
+        now = now_ufa()
         op_date = operation.get("дата") or now.strftime("%d.%m.%Y")
         op_time = now.strftime("%H:%M")
-        month = now.strftime("%B")
+        month = MONTH_NAMES_RU[now.month]
         year = now.year
 
         op_id = get_next_op_id(sheet)
@@ -108,7 +123,7 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         ]
 
         sheet.append_row(row, value_input_option="USER_ENTERED")
-        logger.info(f"Записана операция {op_id}: {operation.get('категория')} {operation.get('сумма')}₽")
+        logger.info(f"Записана операция {op_id}: {operation.get('категория')} {operation.get('сумма')}р")
         return True
 
     except Exception as e:
@@ -126,7 +141,7 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
         op_ids = [x for x in all_ids if str(x).startswith("OP-")]
         last_num = max((int(x.replace("OP-", "")) for x in op_ids), default=0)
 
-        now = datetime.now()
+        now = now_ufa()
         rows = []
 
         for operation in operations:
@@ -136,10 +151,10 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
 
             op_date = operation.get("дата") or now.strftime("%d.%m.%Y")
             op_time = now.strftime("%H:%M")
-            month = now.strftime("%B")
+            month = MONTH_NAMES_RU[now.month]
             year = now.year
 
-            confidence = operation.get("уверенность", 0.8)
+            confidence = operation.get("уверенность", 0.9)
             status = "обработано" if confidence >= 0.8 else "требует проверки"
 
             row = [
@@ -159,7 +174,7 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
                 "", "", "",
                 str(confidence),
                 "Нет", status, "groq",
-                now.strftime("%d.%m.%Y %H:%М"),
+                now.strftime("%d.%m.%Y %H:%M"),
             ]
             rows.append(row)
 
@@ -184,7 +199,7 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
 
 def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) -> dict:
     try:
-        now = datetime.now()
+        now = now_ufa()
         target_month = month or now.month
         target_year = year or now.year
 
@@ -193,12 +208,7 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
         all_rows = sheet.get_all_records()
 
-        month_names_ru = {
-            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
-            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
-        }
-        target_month_name = month_names_ru[target_month]
+        target_month_name = MONTH_NAMES_RU[target_month]
 
         expenses = {}
         income = 0.0
@@ -271,7 +281,7 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
 def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> dict:
     """Архивирует операции за месяц и очищает лист ОПЕРАЦИИ."""
     try:
-        now = datetime.now()
+        now = now_ufa()
         if not month:
             if now.month == 1:
                 month = 12
@@ -289,14 +299,9 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
         archive_sheet = spreadsheet.worksheet("АРХИВ")
 
-        month_names_ru = {
-            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
-            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
-        }
-        month_name = month_names_ru[month]
+        month_name = MONTH_NAMES_RU[month]
         период = f"{month_name} {year}"
-        now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+        now_str = now_ufa().strftime("%d.%m.%Y %H:%M")
 
         archive_rows = []
         for cat, amount in report["все_категории"].items():
@@ -416,6 +421,7 @@ def smart_query(query_text: str) -> dict:
         idx_type   = find_col(["тип"],              6)
         idx_amount = find_col(["сумма"],            7)
         idx_cat    = find_col(["категори"],         9)
+        idx_shop   = find_col(["магазин"],          12)
         idx_desc   = find_col(["товар", "описани"], 13)
         idx_recv   = find_col(["получател"],        14)
 
@@ -423,43 +429,37 @@ def smart_query(query_text: str) -> dict:
         total_amount = 0.0
 
         for row in ops_rows[1:]:
-            # Дополняем строку если она короче ожидаемого
-            while len(row) <= max(idx_cat, idx_desc, idx_amount, idx_recv):
+            while len(row) <= max(idx_cat, idx_desc, idx_amount, idx_recv, idx_shop):
                 row.append("")
 
             cat_val   = row[idx_cat].lower()
             desc_val  = row[idx_desc].lower()
             recv_val  = row[idx_recv].lower()
+            shop_val  = row[idx_shop].lower()
             t_val     = row[idx_type].lower()
             row_month = row[idx_month].strip()
 
             is_income_row = "доход" in t_val or "доход" in cat_val
 
-            # Фильтр по месяцу — поддерживает и русский и английский
             if target_month and not month_matches(row_month, target_month):
                 continue
 
-            # Объединяем все текстовые поля для поиска
-            text_to_search = f"{cat_val} {desc_val} {recv_val}".replace(".", " ")
+            text_to_search = f"{cat_val} {desc_val} {recv_val} {shop_val}".replace(".", " ")
 
             match_found = False
-
             if is_aleksey_search:
-                # Ищем "алекс" в любом поле, только среди доходов
                 if "алекс" in text_to_search and is_income_row:
                     match_found = True
 
             if match_found:
                 date       = row[idx_date]
                 amount_str = row[idx_amount]
-
                 try:
                     amount_num = float(str(amount_str).replace(" ", "").replace(",", "."))
                     total_amount += amount_num
                 except ValueError:
                     pass
-
-                d_text = row[idx_desc] or row[idx_recv]
+                d_text = row[idx_recv] or row[idx_desc] or row[idx_shop]
                 found_lines.append(f"📅 {date} | 💰 {amount_str} ₽ | _{d_text}_")
 
         if not found_lines:
