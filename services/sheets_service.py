@@ -208,7 +208,7 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
-        all_rows = sheet.get_all_records()
+        all_values = sheet.get_all_values()
 
         target_month_name = MONTH_NAMES_RU[target_month]
 
@@ -217,11 +217,40 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         total_expense = 0.0
         count = 0
 
-        for row in all_rows:
-            row_date = str(row.get("Дата", ""))
-            row_month = str(row.get("Месяц", ""))
-            row_year = str(row.get("Год", ""))
-            row_type = str(row.get("Тип операции", "")).lower()
+        if len(all_values) <= 1:
+            return {
+                "месяц": target_month_name, "год": target_year,
+                "доходы": 0, "расходы": 0, "остаток": 0,
+                "количество": 0, "топ_категорий": [], "все_категории": {},
+            }
+
+        headers = [h.strip().lower() for h in all_values[0]]
+
+        def hcol(names, default):
+            for name in names:
+                for i, h in enumerate(headers):
+                    if name.lower() in h:
+                        return i
+            return default
+
+        ic_date  = hcol(["дата"],        2)
+        ic_month = hcol(["месяц","month"],4)
+        ic_year  = hcol(["год"],         5)
+        ic_type  = hcol(["тип"],         6)
+        ic_sum   = hcol(["сумма"],       7)
+        ic_cat   = hcol(["категори"],    9)
+
+        for raw_row in all_values[1:]:
+            def cell(i):
+                return raw_row[i].strip() if i < len(raw_row) else ""
+
+            row_date  = cell(ic_date)
+            row_month = cell(ic_month)
+            row_year  = cell(ic_year)
+            row_type  = cell(ic_type).lower()
+            row = {"Дата": row_date, "Месяц": row_month, "Год": row_year,
+                   "Тип операции": row_type, "Сумма": cell(ic_sum),
+                   "Категория": cell(ic_cat)}
 
             in_period = False
             if month_matches(row_month, target_month_name) and str(target_year) in row_year:
@@ -320,42 +349,55 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         if archive_rows:
             archive_sheet.append_rows(archive_rows, value_input_option="USER_ENTERED")
 
-        all_rows = ops_sheet.get_all_records()
+        all_values = ops_sheet.get_all_values()
         очищено = 0
         rows_to_keep = []
 
-        for row in all_rows:
-            row_month = str(row.get("Месяц", ""))
-            row_year = str(row.get("Год", ""))
-            row_date = str(row.get("Дата", ""))
-            in_period = False
+        if len(all_values) > 1:
+            hdrs = all_values[0]
+            h_lower = [h.strip().lower() for h in hdrs]
+            def ac(names, default):
+                for name in names:
+                    for i, h in enumerate(h_lower):
+                        if name in h:
+                            return i
+                return default
+            ai_month = ac(["месяц","month"], 4)
+            ai_year  = ac(["год"], 5)
+            ai_date  = ac(["дата"], 2)
 
-            if month_matches(row_month, month_name) and str(year) in row_year:
-                in_period = True
-            elif row_date:
-                try:
-                    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
-                        try:
-                            dt = datetime.strptime(row_date[:10], fmt)
-                            if dt.month == month and dt.year == year:
-                                in_period = True
-                            break
-                        except ValueError:
-                            continue
-                except Exception:
-                    pass
+            for raw_row in all_values[1:]:
+                def rcell(i):
+                    return raw_row[i].strip() if i < len(raw_row) else ""
+                row_month = rcell(ai_month)
+                row_year  = rcell(ai_year)
+                row_date  = rcell(ai_date)
+                in_period = False
 
-            if in_period:
-                очищено += 1
-            else:
-                rows_to_keep.append(row)
+                if month_matches(row_month, month_name) and str(year) in row_year:
+                    in_period = True
+                elif row_date:
+                    try:
+                        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+                            try:
+                                dt = datetime.strptime(row_date[:10], fmt)
+                                if dt.month == month and dt.year == year:
+                                    in_period = True
+                                break
+                            except ValueError:
+                                continue
+                    except Exception:
+                        pass
+
+                if in_period:
+                    очищено += 1
+                else:
+                    rows_to_keep.append(raw_row)
 
         if очищено > 0:
-            headers = ops_sheet.row_values(1)
             ops_sheet.resize(1)
             if rows_to_keep:
-                remaining = [[str(row.get(h, "")) for h in headers] for row in rows_to_keep]
-                ops_sheet.append_rows(remaining, value_input_option="USER_ENTERED")
+                ops_sheet.append_rows(rows_to_keep, value_input_option="USER_ENTERED")
 
         return {
             "месяц": month_name,
