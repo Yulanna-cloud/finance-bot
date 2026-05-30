@@ -120,6 +120,7 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
             str(confidence),
             "Нет", status, "groq",
             now.strftime("%d.%m.%Y %H:%M"),
+            operation.get("отправитель", ""),
         ]
 
         sheet.append_row(row, value_input_option="USER_ENTERED")
@@ -175,6 +176,7 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
                 str(confidence),
                 "Нет", status, "groq",
                 now.strftime("%d.%m.%Y %H:%M"),
+                operation.get("отправитель", ""),
             ]
             rows.append(row)
 
