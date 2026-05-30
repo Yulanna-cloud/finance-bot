@@ -1,13 +1,14 @@
 """
 Обработчик файлов банковских выписок.
 Поддерживает CSV, Excel и PDF от Сбербанка.
+Парсинг PDF — собственный код без ИИ, чтобы правила всегда соблюдались точно.
 """
 
 import logging
 import io
 import os
-import json
 import re
+import json
 import pandas as pd
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -18,145 +19,107 @@ logger = logging.getLogger(__name__)
 
 MAX_OPERATIONS = 200
 
-# Продуктовые супермаркеты — пропускаем полностью
-SKIP_MERCHANTS_LOWER = [
-    "pyaterochka", "пятерочка", "magnit", "магнит", "krasnoe",
-    "beloe", "находка", "ежик", "светофор", "монеточка",
-    "perekrestok", "перекресток", "lenta", "лента", "вкусвилл", "spar",
-    "дикси", "окей", "fix price", "самокат",
+# ─── Продуктовые супермаркеты — пропускаем полностью ─────────────────────────
+SKIP_MERCHANTS = [
+    "pyaterochka", "krasnoe", "beloe", "magnit", "lenta",
+    "perekrestok", "dixi", "spar", "пятерочка", "магнит",
+    "перекресток", "лента", "дикси", "находка", "ежик",
+    "светофор", "монеточка", "вкусвилл", "окей", "fix price", "самокат",
 ]
 
-# Маркеры переброски между своими счетами
-INTERNAL_MARKERS_LOWER = [
-    "vklad-karta", "karta-vklad", "sberbank onl@in",
-]
-
-# Члены семьи
-FAMILY_LOWER = [
-    "маргарита", "диана ш", "диана александровна",
-    "райса", "юланна", "салават", "дамир г", "ольга г",
-    "алексей п", "алексей георгиевич",
-]
-
-# Нормализация имён
-NAME_MAP = {
-    "маргарита алексеевна": "Маргарита П.",
-    "маргарита п":          "Маргарита П.",
-    "п. маргарита":         "Маргарита П.",
-    "диана александровна":  "Диана Ш.",
-    "диана ш":              "Диана Ш.",
-    "ш. диана":             "Диана Ш.",
-    "алексей георгиевич":   "Алексей П.",
-    "алексей п":            "Алексей П.",
-    "п. алексей":           "Алексей П.",
-    "райса махмутовна":     "Райса Г.",
-    "г. райса":             "Райса Г.",
-    "райса г":              "Райса Г.",
+# ─── Члены семьи ──────────────────────────────────────────────────────────────
+FAMILY_NAMES = {
+    "маргарита":  "Маргарита П.",
+    "диана":      "Диана Ш.",
+    "алексей":    "Алексей П.",
+    "райса":      "Райса Г.",
+    "юланна":     "Юланна Г.",
+    "салават":    "Салават Г.",
+    "дамир":      "Дамир Г.",
+    "ольга г":    "Ольга Г.",
 }
 
-
-def normalize_name(name: str) -> str:
-    name_lower = name.lower().strip()
-    for key, val in NAME_MAP.items():
-        if key in name_lower:
+def normalize_family_name(raw: str) -> str | None:
+    """Если строка содержит имя члена семьи — вернуть нормализованное имя."""
+    r = raw.lower()
+    for key, val in FAMILY_NAMES.items():
+        if key in r:
             return val
-    return name.strip()
+    return None
 
-
-def is_family(name: str) -> bool:
-    name_lower = name.lower()
-    return any(f in name_lower for f in FAMILY_LOWER)
-
-
-def get_category_for_family(recv: str, op_type: str) -> str:
-    recv_lower = recv.lower()
-    if "маргарита" in recv_lower or "диана" in recv_lower:
-        return "Дети" if op_type == "расход" else "Доход"
-    if "алексей" in recv_lower:
-        return "Переводы" if op_type == "расход" else "Доход"
-    if any(x in recv_lower for x in ["райса", "салават", "юланна", "дамир", "ольга"]):
-        return "Семья"
-    return "Доход" if op_type == "доход" else "Переводы"
+def family_category(name: str, op_type: str) -> str:
+    n = name.lower()
+    if "маргарита" in n or "диана" in n:
+        return "Дети"      if op_type == "расход" else "Доход"
+    if "алексей" in n:
+        return "Переводы"  if op_type == "расход" else "Доход"
+    return "Семья"
 
 
 def parse_sber_pdf(pdf_bytes: bytes) -> list:
-    """Парсит PDF выписку Сбербанка через Groq, затем жёстко фильтрует в Python."""
+    """
+    Собственный парсер PDF-выписки Сбербанка.
+    Не использует ИИ — читает строки напрямую и применяет правила в коде.
+    """
     try:
         import pypdf
-        from services.gemini_service import groq_client
-
         reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
+    except ImportError:
+        logger.error("pypdf не установлен")
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка чтения PDF: {e}")
+        return []
 
-        logger.info(f"PDF прочитан, длина текста: {len(full_text)}")
+    logger.info(f"PDF прочитан, символов: {len(full_text)}")
 
-        if not groq_client:
-            logger.error("GROQ_API_KEY не найден")
-            return []
+    # Разбиваем на блоки операций.
+    # Каждый блок начинается со строки вида "26.05.2026 13:35 Категория сумма"
+    # Следующая строка — описание операции
+    lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
-        prompt = f"""Разбери банковскую выписку Сбербанка. Верни ТОЛЬКО JSON массив без markdown.
-Включай ТОЛЬКО операции которые реально есть в тексте. Не придумывай.
+    # Паттерн первой строки блока: дата время категория сумма
+    # Например: "26.05.2026 13:35 Рестораны и кафе 218,00"
+    block_pattern = re.compile(
+        r'^(\d{2}\.\d{2}\.\d{4})\s+'     # дата
+        r'\d{2}:\d{2}\s+'                 # время
+        r'(.+?)\s+'                        # категория сбера
+        r'([+\-]?\s*[\d\s]+[,\.]\d{2})$' # сумма
+    )
 
-Для каждой операции верни:
-{{"дата":"DD.MM.YYYY","сумма":число положительное,"тип":"расход/доход/наличные/внутренний","категория":"...","магазин":"...","получатель":"...","исходный_текст":"точная строка из выписки"}}
+    operations = []
+    i = 0
+    while i < len(lines):
+        m = block_pattern.match(lines[i])
+        if m:
+            date_str  = m.group(1)          # "26.05.2026"
+            sber_cat  = m.group(2).strip()  # "Рестораны и кафе"
+            amount_str = m.group(3).strip() # "+1 000,00" или "218,00"
 
-Правила типа:
-- Сумма со знаком + = тип "доход"
-- Сумма без знака = тип "расход"
-- ATM, выдача наличных = тип "наличные"
-- SBERBANK ONL@IN, VKLAD-KARTA, KARTA-VKLAD = тип "внутренний" (переброска между своими счетами)
+            # Следующая строка — описание операции
+            desc = lines[i + 1].strip() if i + 1 < len(lines) else ""
 
-Правила получателя (только члены семьи):
-- "Маргарита Алексеевна" → получатель="Маргарита П."
-- "Диана Александровна" → получатель="Диана Ш."
-- "Алексей Георгиевич" → получатель="Алексей П."
-- "Райса Махмутовна" → получатель="Райса Г."
+            i += 2  # переходим к следующему блоку
 
-Правила магазина:
-- Магазин/кафе/ИП: магазин=название без города и RUS, получатель=""
-- Яндекс приход: тип="доход", получатель="Алексей П.", магазин=""
-- Яндекс расход: тип="расход", категория="Подписки", магазин="Яндекс"
-
-Категории: Кафе, Транспорт, Одежда, Дом, Медицина, Коммуналка, Переводы, Дети, Семья, Подписки, Доход, Наличные, Прочее
-
-Текст выписки:
-{full_text[:6000]}"""
-
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        logger.info(f"Groq ответ (первые 500 символов): {raw[:500]}")
-
-        items = json.loads(raw)
-        if not isinstance(items, list):
-            return []
-
-        result = []
-        for item in items:
+            # ── Определяем знак суммы ──────────────────────────────────────
+            is_income = amount_str.startswith("+")
+            clean_amount = re.sub(r'[+\-\s]', '', amount_str).replace(',', '.')
             try:
-                amount = float(str(item.get("сумма", 0)).replace(",", "."))
-            except (ValueError, TypeError):
+                amount = float(clean_amount)
+            except ValueError:
                 continue
             if amount <= 0:
                 continue
 
-            op_type    = str(item.get("тип", "расход")).lower().strip()
-            магазин    = str(item.get("магазин", "") or "")
-            получатель = str(item.get("получатель", "") or "")
-            категория  = str(item.get("категория", "Прочее") or "Прочее")
-            исходный   = str(item.get("исходный_текст", "") or "").lower()
+            desc_lower = desc.lower()
 
-            all_text = f"{магазин} {получатель} {исходный}".lower()
-
-            # ── 1. Жёсткий фильтр: внутренние переброски ──────────────────
-            if op_type == "внутренний" or any(m in all_text for m in INTERNAL_MARKERS_LOWER):
-                # Записываем как отдельный тип, не доход и не расход
-                result.append({
-                    "дата": item.get("дата", ""),
+            # ── 1. Внутренние переброски между своими счетами ──────────────
+            if any(m in desc_lower for m in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
+                operations.append({
+                    "дата": date_str,
                     "сумма": amount,
                     "тип": "между счетами",
                     "категория": "Между счетами",
@@ -164,57 +127,119 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
                     "магазин": "",
                     "описание": "Переброска между своими счетами",
                     "получатель": "",
-                    "уверенность": 0.9,
+                    "уверенность": 1.0,
                 })
                 continue
 
-            # ── 2. Жёсткий фильтр: продуктовые супермаркеты ──────────────
-            if any(s in all_text for s in SKIP_MERCHANTS_LOWER):
-                logger.info(f"Пропускаем супермаркет: {магазин}")
+            # ── 2. Пропускаем "Без идентификации" ─────────────────────────
+            if "без идентификации" in desc_lower:
                 continue
 
-            # ── 3. Нормализация получателя ────────────────────────────────
-            recv = normalize_name(получатель) if получатель else ""
-            shop = магазин
+            # ── 3. Продуктовые супермаркеты — пропускаем ──────────────────
+            if any(s in desc_lower for s in SKIP_MERCHANTS):
+                logger.info(f"Пропускаем супермаркет: {desc}")
+                continue
 
-            # Если получатель — не семья, это частник/ИП → в магазин
-            if recv and not is_family(recv):
-                shop = recv
-                recv = ""
+            # ── 4. Наличные (банкомат) ─────────────────────────────────────
+            if "atm" in desc_lower or "банкомат" in desc_lower or "выдача наличных" in desc_lower or sber_cat.lower() == "выдача наличных":
+                operations.append({
+                    "дата": date_str,
+                    "сумма": amount,
+                    "тип": "наличные",
+                    "категория": "Наличные",
+                    "подкатегория": "",
+                    "магазин": desc,
+                    "описание": "",
+                    "получатель": "",
+                    "уверенность": 1.0,
+                })
+                continue
 
-            # ── 4. Категория для семьи ────────────────────────────────────
-            if recv:
-                категория = get_category_for_family(recv, op_type)
+            # ── 5. Определяем тип операции ────────────────────────────────
+            op_type = "доход" if is_income else "расход"
 
-            # ── 5. Наличные ───────────────────────────────────────────────
-            if op_type == "наличные" or "atm" in all_text or "банкомат" in all_text:
-                op_type = "наличные"
-                категория = "Наличные"
+            # ── 6. Переводы людям (ищем паттерн "Перевод от/для Имя") ─────
+            recv = ""
+            shop = ""
+            category = ""
 
-            result.append({
-                "дата": item.get("дата", ""),
+            transfer_match = re.search(
+                r'перевод\s+(?:от|для|для\s+\w+\.)\s+(.+?)(?:\.|$)',
+                desc_lower
+            )
+            yandex_match = "яндекс" in desc_lower
+
+            if yandex_match:
+                if is_income:
+                    recv = "Алексей П."
+                    category = "Доход"
+                else:
+                    shop = "Яндекс"
+                    category = "Подписки"
+
+            elif transfer_match or "перевод" in desc_lower:
+                # Извлекаем имя получателя/отправителя из описания
+                # Паттерны Сбера: "Перевод для П. Маргарита Алексеевна"
+                #                  "Перевод от Ш. Диана Александровна"
+                name_match = re.search(
+                    r'(?:от|для)\s+(?:\w+\.\s+)?([А-ЯЁа-яё]+(?:\s+[А-ЯЁа-яё]+)*)',
+                    desc, re.IGNORECASE
+                )
+                raw_name = name_match.group(1).strip() if name_match else ""
+                family = normalize_family_name(raw_name) if raw_name else None
+
+                if family:
+                    recv = family
+                    category = family_category(family, op_type)
+                elif raw_name:
+                    # Не семья — частник/ИП → в магазин
+                    parts = raw_name.split()
+                    if len(parts) >= 2:
+                        shop = f"{parts[0]} {parts[1][0]}."
+                    else:
+                        shop = raw_name
+                    category = "Переводы" if op_type == "расход" else "Доход"
+                else:
+                    category = "Переводы" if op_type == "расход" else "Доход"
+
+            else:
+                # ── 7. Магазины, кафе и прочее ────────────────────────────
+                # Убираем "ГОРОД RUS" из названия
+                clean_desc = re.sub(r'\s+(?:STERLITAMAK|MOSCOW|SPB|RUS)\s*$', '', desc, flags=re.IGNORECASE).strip()
+                shop = clean_desc
+
+                sber_cat_lower = sber_cat.lower()
+                if "ресторан" in sber_cat_lower or "кафе" in sber_cat_lower:
+                    category = "Кафе"
+                elif "одежда" in sber_cat_lower or "аксессуар" in sber_cat_lower:
+                    category = "Одежда"
+                elif "транспорт" in sber_cat_lower:
+                    category = "Транспорт"
+                elif "медицин" in sber_cat_lower or "аптека" in sber_cat_lower:
+                    category = "Медицина"
+                elif "дом" in sber_cat_lower:
+                    category = "Дом"
+                elif "супермаркет" in sber_cat_lower:
+                    category = "Продукты"
+                else:
+                    category = "Прочее"
+
+            operations.append({
+                "дата": date_str,
                 "сумма": amount,
                 "тип": op_type,
-                "категория": категория,
+                "категория": category,
                 "подкатегория": "",
                 "магазин": shop,
                 "описание": "",
                 "получатель": recv,
-                "уверенность": 0.9,
+                "уверенность": 1.0,
             })
+        else:
+            i += 1
 
-        logger.info(f"Итого операций после фильтрации: {len(result)}")
-        return result
-
-    except ImportError:
-        logger.error("pypdf не установлен")
-        return []
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка парсинга JSON от Groq: {e}")
-        return []
-    except Exception as e:
-        logger.error(f"Ошибка парсинга PDF: {e}", exc_info=True)
-        return []
+    logger.info(f"Распознано операций: {len(operations)}")
+    return operations
 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,7 +269,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         operations = []
 
         if ext == ".pdf":
-            await update.message.reply_text("📄 Определила формат Сбербанка. Анализирую операции...")
+            await update.message.reply_text("📄 Анализирую операции Сбербанка...")
             operations = parse_sber_pdf(file_bytes)
         else:
             buf = io.BytesIO(file_bytes)
@@ -260,7 +285,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not operations:
             await update.message.reply_text(
                 "❌ Не нашла операций для записи.\n"
-                "Возможно все операции — это супермаркеты или внутренние переброски."
+                "Возможно все операции — продуктовые магазины или переброски между счетами."
             )
             return
 
@@ -275,7 +300,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             emoji = {"доход": "💰", "между счетами": "🔄", "наличные": "🏧"}.get(тип, "💸")
             показать = op.get("получатель") or op.get("магазин") or op.get("описание") or "—"
             preview_lines.append(
-                f"{emoji} {показать[:40]} — {op.get('сумма', 0):,.0f} ₽ ({op.get('категория', '')})"
+                f"{emoji} {показать[:40]} — {op['сумма']:,.0f} ₽ ({op.get('категория', '')})"
             )
         if len(operations) > 10:
             preview_lines.append(f"_...и ещё {len(operations) - 10} операций_")
