@@ -6,7 +6,7 @@ import logging
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    filters, ContextTypes
+    CallbackQueryHandler, filters, ContextTypes
 )
 from handlers.text_handler import handle_text
 from handlers.voice_handler import handle_voice
@@ -14,6 +14,7 @@ from handlers.photo_handler import handle_photo
 from handlers.file_handler import handle_file
 from handlers.report_handler import handle_report
 from handlers.archive_handler import handle_archive, handle_smart_query
+from handlers.delete_handler import handle_delete, handle_delete_callback
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -30,10 +31,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📷 *Фото чека* — сфотографируй чек, разберу по позициям\n"
         "📄 *Файл выписки* — загрузи PDF/CSV/Excel из банка\n"
         "💬 *Текст* — напиши «такси 300» или «Пятерочка 1200»\n"
-        "❓ *Вопрос* — спроси «сколько пришло от Алексея П» или «расходы на продукты»\n\n"
+        "❓ *Вопрос* — спроси «сколько пришло от Алексея» или «расходы на продукты»\n\n"
         "📊 Команды:\n"
         "/otchet — отчёт за текущий месяц\n"
         "/archive — архивировать прошлый месяц и очистить таблицу\n"
+        "/delete — удалить ошибочную запись\n"
         "/pomosh — эта справка\n\n"
         "Поехали! 🚀"
     )
@@ -57,6 +59,10 @@ def main():
     app.add_handler(CommandHandler("pomosh", help_command))
     app.add_handler(CommandHandler("otchet", handle_report))
     app.add_handler(CommandHandler("archive", handle_archive))
+    app.add_handler(CommandHandler("delete", handle_delete))
+
+    # Обработчик кнопок (для /delete)
+    app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern="^del_"))
 
     # Сообщения
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
