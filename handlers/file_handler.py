@@ -7,6 +7,7 @@ import logging
 import io
 import os
 import json
+import re
 import pandas as pd
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -17,45 +18,44 @@ logger = logging.getLogger(__name__)
 
 MAX_OPERATIONS = 200
 
-# Продуктовые супермаркеты — пропускаем
-SKIP_MERCHANTS = [
-    "pyaterochka", "пятерочка", "magnit", "магнит", "krasnoe", "красное",
-    "beloe", "белое", "находка", "ежик", "светофор", "монеточка",
+# Продуктовые супермаркеты — пропускаем полностью
+SKIP_MERCHANTS_LOWER = [
+    "pyaterochka", "пятерочка", "magnit", "магнит", "krasnoe",
+    "beloe", "находка", "ежик", "светофор", "монеточка",
     "perekrestok", "перекресток", "lenta", "лента", "вкусвилл", "spar",
-    "дикси", "окей", "fix price", "самокат"
+    "дикси", "окей", "fix price", "самокат",
 ]
 
-# Внутренние переброски между счетами — записываем как "между счетами"
-INTERNAL_MARKERS = [
-    "vklad-karta", "karta-vklad", "sberbank onl@in"
+# Маркеры переброски между своими счетами
+INTERNAL_MARKERS_LOWER = [
+    "vklad-karta", "karta-vklad", "sberbank onl@in",
 ]
 
-# Члены семьи — пишем в поле "получатель"
-FAMILY_MEMBERS = [
+# Члены семьи
+FAMILY_LOWER = [
     "маргарита", "диана ш", "диана александровна",
     "райса", "юланна", "салават", "дамир г", "ольга г",
     "алексей п", "алексей георгиевич",
 ]
 
-# Нормализация имён — убираем отчества, оставляем "Имя Ф."
+# Нормализация имён
 NAME_MAP = {
     "маргарита алексеевна": "Маргарита П.",
     "маргарита п":          "Маргарита П.",
+    "п. маргарита":         "Маргарита П.",
     "диана александровна":  "Диана Ш.",
     "диана ш":              "Диана Ш.",
+    "ш. диана":             "Диана Ш.",
     "алексей георгиевич":   "Алексей П.",
     "алексей п":            "Алексей П.",
     "п. алексей":           "Алексей П.",
     "райса махмутовна":     "Райса Г.",
     "г. райса":             "Райса Г.",
     "райса г":              "Райса Г.",
-    "ш. диана":             "Диана Ш.",
-    "п. маргарита":         "Маргарита П.",
 }
 
 
 def normalize_name(name: str) -> str:
-    """Нормализует имя — убирает отчество, приводит к короткому формату."""
     name_lower = name.lower().strip()
     for key, val in NAME_MAP.items():
         if key in name_lower:
@@ -64,13 +64,11 @@ def normalize_name(name: str) -> str:
 
 
 def is_family(name: str) -> bool:
-    """Проверяет, является ли получатель членом семьи."""
     name_lower = name.lower()
-    return any(f in name_lower for f in FAMILY_MEMBERS)
+    return any(f in name_lower for f in FAMILY_LOWER)
 
 
-def get_category(recv: str, op_type: str) -> str:
-    """Определяет категорию по получателю и типу операции."""
+def get_category_for_family(recv: str, op_type: str) -> str:
     recv_lower = recv.lower()
     if "маргарита" in recv_lower or "диана" in recv_lower:
         return "Дети" if op_type == "расход" else "Доход"
@@ -82,7 +80,7 @@ def get_category(recv: str, op_type: str) -> str:
 
 
 def parse_sber_pdf(pdf_bytes: bytes) -> list:
-    """Парсит PDF выписку Сбербанка через Groq."""
+    """Парсит PDF выписку Сбербанка через Groq, затем жёстко фильтрует в Python."""
     try:
         import pypdf
         from services.gemini_service import groq_client
@@ -98,48 +96,30 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             logger.error("GROQ_API_KEY не найден")
             return []
 
-        prompt = f"""Ты разбираешь банковскую выписку Сбербанка. Верни ТОЛЬКО JSON массив без markdown.
-Включай ТОЛЬКО операции которые реально есть в тексте выписки. Не придумывай операции.
+        prompt = f"""Разбери банковскую выписку Сбербанка. Верни ТОЛЬКО JSON массив без markdown.
+Включай ТОЛЬКО операции которые реально есть в тексте. Не придумывай.
 
-ПРАВИЛО 1 — Пропусти полностью:
-- Строки с "Нэсп Без Идентификации" или "Без Идентификации"
-- Строки с PYATEROCHKA, KRASNOE, BELOE, MAGNIT, LENTA, PEREKRESTOK, DIXI, SPAR
+Для каждой операции верни:
+{{"дата":"DD.MM.YYYY","сумма":число положительное,"тип":"расход/доход/наличные/внутренний","категория":"...","магазин":"...","получатель":"...","исходный_текст":"точная строка из выписки"}}
 
-ПРАВИЛО 2 — Переброски между счетами (SBERBANK ONL@IN, VKLAD-KARTA, KARTA-VKLAD):
-- НЕ пропускай их, но ставь тип "между счетами", категория="Между счетами", магазин="", получатель=""
-- Это не доход и не расход, просто перемещение денег между своими счетами
-
-ПРАВИЛО 3 — Тип операции для всего остального:
+Правила типа:
 - Сумма со знаком + = тип "доход"
-- Сумма без знака или с минусом = тип "расход"
-- ATM, банкомат, выдача наличных = тип "наличные"
+- Сумма без знака = тип "расход"
+- ATM, выдача наличных = тип "наличные"
+- SBERBANK ONL@IN, VKLAD-KARTA, KARTA-VKLAD = тип "внутренний" (переброска между своими счетами)
 
-ПРАВИЛО 4 — Члены семьи (пиши только имя и первую букву фамилии в поле "получатель"):
-Маргарита П., Диана Ш., Алексей П., Райса Г., Юланна Г., Салават Г., Дамир Г., Ольга Г.
-- Пример: "Маргарита Алексеевна" → получатель="Маргарита П."
-- Пример: "Алексей Георгиевич" → получатель="Алексей П."
-- Пример: "Диана Александровна" → получатель="Диана Ш."
-- Пример: "Райса Махмутовна" → получатель="Райса Г."
+Правила получателя (только члены семьи):
+- "Маргарита Алексеевна" → получатель="Маргарита П."
+- "Диана Александровна" → получатель="Диана Ш."
+- "Алексей Георгиевич" → получатель="Алексей П."
+- "Райса Махмутовна" → получатель="Райса Г."
 
-ПРАВИЛО 5 — Все остальные люди в переводах (не семья) — частники:
-- Пиши сокращённо в поле "магазин", поле "получатель" = ""
-- Пример: "В. Динара Фаниловна" → магазин="Динара Ф."
+Правила магазина:
+- Магазин/кафе/ИП: магазин=название без города и RUS, получатель=""
+- Яндекс приход: тип="доход", получатель="Алексей П.", магазин=""
+- Яндекс расход: тип="расход", категория="Подписки", магазин="Яндекс"
 
-ПРАВИЛО 6 — Магазины и кафе:
-- поле "магазин" = название без города и RUS
-- "BUTIK LILIYA STERLITAMAK RUS" → магазин="Butik Liliya"
-- "IP EFIMOVA STERLITAMAK RUS" → магазин="IP Efimova"
-- "MIRA STERLITAMAK RUS" → магазин="Mira"
-- "MAGAZIN 1 STERLITAMAK RUS" → магазин="Magazin 1"
-
-ПРАВИЛО 7 — Яндекс:
-- Яндекс + ПРИХОД → тип="доход", категория="Доход", получатель="Алексей П.", магазин=""
-- Яндекс + РАСХОД → тип="расход", категория="Подписки", магазин="Яндекс", получатель=""
-
-Категории: Кафе, Транспорт, Одежда, Дом, Медицина, Коммуналка, Переводы, Дети, Семья, Подписки, Доход, Наличные, Между счетами, Прочее
-
-Формат объекта:
-{{"дата":"DD.MM.YYYY","сумма":число,"тип":"расход/доход/наличные/между счетами","категория":"...","магазин":"...","описание":"","получатель":"..."}}
+Категории: Кафе, Транспорт, Одежда, Дом, Медицина, Коммуналка, Переводы, Дети, Семья, Подписки, Доход, Наличные, Прочее
 
 Текст выписки:
 {full_text[:6000]}"""
@@ -153,7 +133,6 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
 
         items = json.loads(raw)
         if not isinstance(items, list):
-            logger.error(f"Groq вернул не массив: {type(items)}")
             return []
 
         result = []
@@ -165,51 +144,66 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             if amount <= 0:
                 continue
 
-            op_type = item.get("тип", "расход")
-            магазин_raw = item.get("магазин", "")
-            получатель_raw = item.get("получатель", "")
-            описание = item.get("описание", "").lower()
-            проверка = f"{описание} {магазин_raw.lower()} {получатель_raw.lower()}"
+            op_type    = str(item.get("тип", "расход")).lower().strip()
+            магазин    = str(item.get("магазин", "") or "")
+            получатель = str(item.get("получатель", "") or "")
+            категория  = str(item.get("категория", "Прочее") or "Прочее")
+            исходный   = str(item.get("исходный_текст", "") or "").lower()
 
-            # Фильтр продуктовых магазинов
-            if any(s in проверка for s in SKIP_MERCHANTS):
-                logger.info(f"Пропускаем супермаркет: {магазин_raw}")
+            all_text = f"{магазин} {получатель} {исходный}".lower()
+
+            # ── 1. Жёсткий фильтр: внутренние переброски ──────────────────
+            if op_type == "внутренний" or any(m in all_text for m in INTERNAL_MARKERS_LOWER):
+                # Записываем как отдельный тип, не доход и не расход
+                result.append({
+                    "дата": item.get("дата", ""),
+                    "сумма": amount,
+                    "тип": "между счетами",
+                    "категория": "Между счетами",
+                    "подкатегория": "",
+                    "магазин": "",
+                    "описание": "Переброска между своими счетами",
+                    "получатель": "",
+                    "уверенность": 0.9,
+                })
                 continue
 
-            # Проверка на внутренние переброски (на случай если Groq не распознал)
-            if any(s in проверка for s in INTERNAL_MARKERS):
-                op_type = "между счетами"
-                item["категория"] = "Между счетами"
-                магазин_raw = ""
-                получатель_raw = ""
+            # ── 2. Жёсткий фильтр: продуктовые супермаркеты ──────────────
+            if any(s in all_text for s in SKIP_MERCHANTS_LOWER):
+                logger.info(f"Пропускаем супермаркет: {магазин}")
+                continue
 
-            # Нормализация имён получателя
-            recv = normalize_name(получатель_raw) if получатель_raw else ""
-            shop = магазин_raw
+            # ── 3. Нормализация получателя ────────────────────────────────
+            recv = normalize_name(получатель) if получатель else ""
+            shop = магазин
 
-            # Если получатель — не семья, переносим в магазин
+            # Если получатель — не семья, это частник/ИП → в магазин
             if recv and not is_family(recv):
                 shop = recv
                 recv = ""
 
-            # Категория по получателю (если не задана явно или задана неверно)
-            category = item.get("категория", "Прочее")
-            if recv and category not in ("Дети", "Семья", "Доход", "Переводы"):
-                category = get_category(recv, op_type)
+            # ── 4. Категория для семьи ────────────────────────────────────
+            if recv:
+                категория = get_category_for_family(recv, op_type)
+
+            # ── 5. Наличные ───────────────────────────────────────────────
+            if op_type == "наличные" or "atm" in all_text or "банкомат" in all_text:
+                op_type = "наличные"
+                категория = "Наличные"
 
             result.append({
                 "дата": item.get("дата", ""),
                 "сумма": amount,
                 "тип": op_type,
-                "категория": category,
+                "категория": категория,
                 "подкатегория": "",
                 "магазин": shop,
-                "описание": item.get("описание", ""),
+                "описание": "",
                 "получатель": recv,
-                "уверенность": 0.9
+                "уверенность": 0.9,
             })
 
-        logger.info(f"Разобрано операций: {len(result)}")
+        logger.info(f"Итого операций после фильтрации: {len(result)}")
         return result
 
     except ImportError:
@@ -255,41 +249,33 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             buf = io.BytesIO(file_bytes)
             df = read_statement_file(buf, ext, filename)
-
             if df is None or df.empty:
                 await update.message.reply_text("❌ Не смогла прочитать файл.")
                 return
-
             if len(df) > MAX_OPERATIONS:
                 df = df.head(MAX_OPERATIONS)
-
             text_repr = df.to_string(index=False, max_rows=MAX_OPERATIONS)
             operations = parse_bank_statement(text_repr)
 
         if not operations:
             await update.message.reply_text(
                 "❌ Не нашла операций для записи.\n"
-                "Возможно все операции — это супермаркеты (они пропускаются) "
-                "или внутренние переброски между счетами."
+                "Возможно все операции — это супермаркеты или внутренние переброски."
             )
             return
 
-        total_expense = sum(op.get("сумма", 0) for op in operations if op.get("тип") == "расход")
-        total_income = sum(op.get("сумма", 0) for op in operations if op.get("тип") == "доход")
+        total_expense  = sum(op["сумма"] for op in operations if op.get("тип") == "расход")
+        total_income   = sum(op["сумма"] for op in operations if op.get("тип") == "доход")
         internal_count = sum(1 for op in operations if op.get("тип") == "между счетами")
-        cash_count = sum(1 for op in operations if op.get("тип") == "наличные")
+        cash_count     = sum(1 for op in operations if op.get("тип") == "наличные")
 
         preview_lines = ["📋 *Найдены операции:*\n"]
         for op in operations[:10]:
             тип = op.get("тип", "")
-            emoji = "💰" if тип == "доход" else "🔄" if тип == "между счетами" else "🏧" if тип == "наличные" else "💸"
-            получатель = op.get("получатель", "")
-            магазин = op.get("магазин", "")
-            описание = op.get("описание", "")
-            показать = получатель or магазин or описание or "—"
+            emoji = {"доход": "💰", "между счетами": "🔄", "наличные": "🏧"}.get(тип, "💸")
+            показать = op.get("получатель") or op.get("магазин") or op.get("описание") or "—"
             preview_lines.append(
-                f"{emoji} {показать[:40]} — "
-                f"{op.get('сумма', 0):,.0f} ₽ ({op.get('категория', '')})"
+                f"{emoji} {показать[:40]} — {op.get('сумма', 0):,.0f} ₽ ({op.get('категория', '')})"
             )
         if len(operations) > 10:
             preview_lines.append(f"_...и ещё {len(operations) - 10} операций_")
@@ -305,9 +291,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Доходы: *{total_income:,.0f} ₽*"
         )
         if internal_count:
-            msg += f"\n🔄 Переброски между счетами: {internal_count} (не считаются)"
+            msg += f"\n🔄 Переброски между счетами: {internal_count} шт"
         if cash_count:
-            msg += f"\n🏧 Снятие наличных: {cash_count} раз (не считается)"
+            msg += f"\n🏧 Снятие наличных: {cash_count} раз"
         if errors:
             msg += f"\n⚠️ Не записалось: {errors}"
 
