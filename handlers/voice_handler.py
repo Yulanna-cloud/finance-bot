@@ -157,13 +157,27 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Нормализуем числа-слова в цифры
             normalized = normalize_numbers(transcribed)
 
-            # Определяем магазин из текста
+            # Определяем магазин из текста (ищем по корню слова)
             import re
             магазин = ""
-            store_patterns = ["пятерочка", "магнит", "лента", "перекресток", "вкусвилл", "самокат"]
-            for store in store_patterns:
-                if store in normalized.lower():
-                    магазин = store.title()
+            store_patterns = [
+                ("пятерочк", "Пятерочка"),
+                ("магнит", "Магнит"),
+                ("лент", "Лента"),
+                ("перекресток", "Перекресток"),
+                ("перекрёсток", "Перекресток"),
+                ("вкусвилл", "ВкусВилл"),
+                ("самокат", "Самокат"),
+                ("яндекс лавк", "Яндекс Лавка"),
+                ("вайлдберриз", "Wildberries"),
+                ("wildberries", "Wildberries"),
+                ("озон", "Ozon"),
+                ("ozon", "Ozon"),
+            ]
+            text_lower = normalized.lower()
+            for pattern, name in store_patterns:
+                if pattern in text_lower:
+                    магазин = name
                     break
 
             items = parse_multi_items(normalized)
