@@ -7,3 +7,6 @@ pandas==2.2.2
 openpyxl==3.1.5
 xlrd==2.0.1
 pypdf==4.3.1
+pyzbar
+Pillow
+requests
