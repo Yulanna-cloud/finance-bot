@@ -14,16 +14,14 @@ def build_report_keyboard() -> InlineKeyboardMarkup:
     """Строит клавиатуру выбора периода."""
     now = now_ufa()
 
-    # Текущий месяц
     cur_month = now.month
     cur_year = now.year
 
-    # Предыдущий месяц
     if now.month == 1:
         prev_month = 12
         prev_year = cur_year - 1
     else:
-        prev_month = cur_year - 1
+        prev_month = cur_month - 1
         prev_year = cur_year
 
     cur_name = MONTH_NAMES_RU[cur_month]
