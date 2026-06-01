@@ -23,7 +23,6 @@ SCOPES = [
 # Часовой пояс Уфа = UTC+5
 UFA_TZ = timezone(timedelta(hours=5))
 
-# Соответствие русских и английских названий месяцев
 MONTH_MAP = {
     "январь": ["январь", "january", "jan"],
     "февраль": ["февраль", "february", "feb"],
@@ -39,7 +38,6 @@ MONTH_MAP = {
     "декабрь": ["декабрь", "december", "dec"],
 }
 
-# Русские названия месяцев для записи в таблицу
 MONTH_NAMES_RU = {
     1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
@@ -48,12 +46,10 @@ MONTH_NAMES_RU = {
 
 
 def now_ufa() -> datetime:
-    """Возвращает текущее время по Уфе (UTC+5)."""
     return datetime.now(tz=UFA_TZ)
 
 
 def month_matches(cell_value: str, target_month: str) -> bool:
-    """Проверяет, совпадает ли значение ячейки с нужным месяцем (рус/англ)."""
     cell = cell_value.strip().lower()
     variants = MONTH_MAP.get(target_month.lower(), [target_month.lower()])
     return any(cell == v for v in variants)
@@ -225,20 +221,30 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             }
 
         headers = [h.strip().lower() for h in all_values[0]]
+        logger.info(f"Заголовки таблицы: {headers}")
 
-        def hcol(names, default):
-            for name in names:
+        # Ищем индексы колонок по точному или частичному совпадению
+        def find_col_index(keywords: list, default: int) -> int:
+            # Сначала пробуем точное совпадение
+            for kw in keywords:
                 for i, h in enumerate(headers):
-                    if name.lower() in h:
+                    if h == kw.lower():
+                        return i
+            # Потом частичное
+            for kw in keywords:
+                for i, h in enumerate(headers):
+                    if kw.lower() in h:
                         return i
             return default
 
-        ic_date  = hcol(["дата"],        2)
-        ic_month = hcol(["месяц","month"],4)
-        ic_year  = hcol(["год"],         5)
-        ic_type  = hcol(["тип"],         6)
-        ic_sum   = hcol(["сумма"],       7)
-        ic_cat   = hcol(["категори"],    9)
+        ic_date  = find_col_index(["дата"],                   2)
+        ic_month = find_col_index(["месяц", "month"],         4)
+        ic_year  = find_col_index(["год"],                    5)
+        ic_type  = find_col_index(["тип операции", "тип"],    6)
+        ic_sum   = find_col_index(["сумма"],                  7)
+        ic_cat   = find_col_index(["категория", "категори"],  9)
+
+        logger.info(f"Индексы колонок: дата={ic_date} месяц={ic_month} год={ic_year} тип={ic_type} сумма={ic_sum} категория={ic_cat}")
 
         for raw_row in all_values[1:]:
             def cell(i):
@@ -248,31 +254,28 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             row_month = cell(ic_month)
             row_year  = cell(ic_year)
             row_type  = cell(ic_type).lower()
-            row = {"Дата": row_date, "Месяц": row_month, "Год": row_year,
-                   "Тип операции": row_type, "Сумма": cell(ic_sum),
-                   "Категория": cell(ic_cat)}
+            row_sum   = cell(ic_sum)
+            row_cat   = cell(ic_cat)
 
+            # Определяем, попадает ли строка в нужный период
             in_period = False
             if month_matches(row_month, target_month_name) and str(target_year) in row_year:
                 in_period = True
             elif row_date:
-                try:
-                    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%m/%d/%Y"):
-                        try:
-                            dt = datetime.strptime(row_date[:10], fmt)
-                            if dt.month == target_month and dt.year == target_year:
-                                in_period = True
-                            break
-                        except ValueError:
-                            continue
-                except Exception:
-                    pass
+                for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%m/%d/%Y"):
+                    try:
+                        dt = datetime.strptime(row_date[:10], fmt)
+                        if dt.month == target_month and dt.year == target_year:
+                            in_period = True
+                        break
+                    except ValueError:
+                        continue
 
             if not in_period:
                 continue
 
             try:
-                amount = float(str(row.get("Сумма", 0)).replace(",", ".").replace(" ", "") or 0)
+                amount = float(row_sum.replace(",", ".").replace(" ", "") or 0)
             except (ValueError, TypeError):
                 continue
 
@@ -283,15 +286,17 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                 continue
 
             count += 1
-            category = str(row.get("Категория", "Прочее") or "Прочее")
+            category = row_cat or "Прочее"
 
             if row_type == "доход":
                 income += amount
-            elif row_type in ("расход", ""):
+            elif row_type in ("расход", "между счетами", ""):
                 total_expense += amount
                 expenses[category] = expenses.get(category, 0) + amount
 
         top_categories = sorted(expenses.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        logger.info(f"Отчёт за {target_month_name} {target_year}: доходы={income}, расходы={total_expense}, операций={count}")
 
         return {
             "месяц": target_month_name,
@@ -310,7 +315,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
 
 
 def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> dict:
-    """Архивирует операции за месяц и очищает лист ОПЕРАЦИИ."""
     try:
         now = now_ufa()
         if not month:
@@ -356,19 +360,22 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         if len(all_values) > 1:
             hdrs = all_values[0]
             h_lower = [h.strip().lower() for h in hdrs]
+
             def ac(names, default):
                 for name in names:
                     for i, h in enumerate(h_lower):
                         if name in h:
                             return i
                 return default
-            ai_month = ac(["месяц","month"], 4)
+
+            ai_month = ac(["месяц", "month"], 4)
             ai_year  = ac(["год"], 5)
             ai_date  = ac(["дата"], 2)
 
             for raw_row in all_values[1:]:
                 def rcell(i):
                     return raw_row[i].strip() if i < len(raw_row) else ""
+
                 row_month = rcell(ai_month)
                 row_year  = rcell(ai_year)
                 row_date  = rcell(ai_date)
@@ -377,17 +384,14 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
                 if month_matches(row_month, month_name) and str(year) in row_year:
                     in_period = True
                 elif row_date:
-                    try:
-                        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
-                            try:
-                                dt = datetime.strptime(row_date[:10], fmt)
-                                if dt.month == month and dt.year == year:
-                                    in_period = True
-                                break
-                            except ValueError:
-                                continue
-                    except Exception:
-                        pass
+                    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+                        try:
+                            dt = datetime.strptime(row_date[:10], fmt)
+                            if dt.month == month and dt.year == year:
+                                in_period = True
+                            break
+                        except ValueError:
+                            continue
 
                 if in_period:
                     очищено += 1
@@ -430,7 +434,6 @@ def smart_query(query_text: str) -> dict:
 
         raw_query = query_text.lower()
 
-        # 1. Распознавание месяцев из запроса
         months_query = {
             "январ": "январь", "феврал": "февраль", "март": "март",
             "апрел": "апрель", "мае": "май", "май": "май", "июн": "июнь",
@@ -444,14 +447,11 @@ def smart_query(query_text: str) -> dict:
                 target_month = val
                 break
 
-        # 2. Очистка от знаков препинания
         for char in [".", ",", "?", "!", "-", "/"]:
             raw_query = raw_query.replace(char, " ")
 
-        # 3. Проверяем, ищем ли Алексея
         is_aleksey_search = "алекс" in raw_query
 
-        # 4. Определяем индексы колонок по частичному совпадению
         ops_headers = [h.strip().lower() for h in ops_rows[0]]
 
         def find_col(keywords, default):
