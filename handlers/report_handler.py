@@ -2,20 +2,73 @@
 Обработчик команды /отчет.
 Читает данные из Google Sheets и формирует красивый отчёт.
 """
-
 import logging
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
-from services.sheets_service import get_monthly_report
+from services.sheets_service import get_monthly_report, now_ufa, MONTH_NAMES_RU
 
 logger = logging.getLogger(__name__)
 
+MONTH_ALIASES = {
+    "январ": 1, "феврал": 2, "март": 3, "апрел": 4,
+    "мае": 5, "май": 5, "июн": 6, "июл": 7, "август": 8,
+    "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12,
+}
+
+def parse_month_arg(args: list) -> tuple[int, int] | None:
+    """
+    Парсит аргументы команды и возвращает (month, year) или None.
+    Примеры: ['май'], ['5'], ['май', '2025'], ['5', '2025']
+    """
+    if not args:
+        return None
+
+    now = now_ufa()
+    month = None
+    year = now.year
+
+    for arg in args:
+        arg_lower = arg.lower().strip(".")
+        # Попытка как число
+        try:
+            num = int(arg_lower)
+            if 1 <= num <= 12:
+                month = num
+            elif num > 2000:
+                year = num
+            continue
+        except ValueError:
+            pass
+        # Попытка как название месяца
+        for key, val in MONTH_ALIASES.items():
+            if key in arg_lower:
+                month = val
+                break
+
+    if month is None:
+        return None
+    return month, year
+
 
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📊 Считаю расходы за месяц...")
+    args = context.args or []
+    parsed = parse_month_arg(args)
+
+    now = now_ufa()
+
+    if parsed:
+        target_month, target_year = parsed
+    else:
+        # Без аргументов — текущий месяц
+        target_month = now.month
+        target_year = now.year
+
+    month_name = MONTH_NAMES_RU[target_month]
+    await update.message.reply_text(f"📊 Считаю расходы за {month_name} {target_year}...")
 
     try:
-        report = get_monthly_report()
+        report = get_monthly_report(month=target_month, year=target_year)
 
         if "ошибка" in report:
             await update.message.reply_text(
@@ -31,7 +84,6 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = report["количество"]
         top = report["топ_категорий"]
 
-        # Эмодзи для баланса
         balance_emoji = "✅" if balance >= 0 else "🔴"
         balance_sign = "+" if balance >= 0 else ""
 
@@ -51,17 +103,14 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pct = (amount / expenses * 100) if expenses > 0 else 0
                 lines.append(f"{medal} {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
 
-        # Прогноз на следующий месяц
-        if expenses > 0 and count > 0:
-            from datetime import datetime
-            days_in_month = 30
-            now = datetime.now()
-            days_passed = now.day
-            daily_avg = expenses / days_passed if days_passed > 0 else 0
-            forecast = daily_avg * days_in_month
-
-            lines.append(f"\n🔮 *Прогноз на месяц:* {forecast:,.0f} ₽")
-            lines.append(f"_(в среднем {daily_avg:,.0f} ₽/день)_")
+        # Прогноз только для текущего месяца
+        if target_month == now.month and target_year == now.year:
+            if expenses > 0 and count > 0:
+                days_passed = now.day
+                daily_avg = expenses / days_passed if days_passed > 0 else 0
+                forecast = daily_avg * 30
+                lines.append(f"\n🔮 *Прогноз на месяц:* {forecast:,.0f} ₽")
+                lines.append(f"_(в среднем {daily_avg:,.0f} ₽/день)_")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
