@@ -62,7 +62,8 @@ def main():
     app.add_handler(CommandHandler("delete", handle_delete))
 
     # Обработчик кнопок (для /delete)
-    app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern="^del_"))
+    from handlers.report_handler import handle_report_callback
+    app.add_handler(CallbackQueryHandler(handle_report_callback, pattern="^report_"))
 
     # Сообщения
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
