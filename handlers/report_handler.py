@@ -3,77 +3,135 @@
 Читает данные из Google Sheets и формирует красивый отчёт.
 """
 import logging
-from datetime import datetime
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from services.sheets_service import get_monthly_report, now_ufa, MONTH_NAMES_RU
 
 logger = logging.getLogger(__name__)
 
-MONTH_ALIASES = {
-    "январ": 1, "феврал": 2, "март": 3, "апрел": 4,
-    "мае": 5, "май": 5, "июн": 6, "июл": 7, "август": 8,
-    "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12,
-}
 
-def parse_month_arg(args: list) -> tuple[int, int] | None:
-    """
-    Парсит аргументы команды и возвращает (month, year) или None.
-    Примеры: ['май'], ['5'], ['май', '2025'], ['5', '2025']
-    """
-    if not args:
-        return None
-
+def build_report_keyboard() -> InlineKeyboardMarkup:
+    """Строит клавиатуру выбора периода."""
     now = now_ufa()
-    month = None
-    year = now.year
 
-    for arg in args:
-        arg_lower = arg.lower().strip(".")
-        # Попытка как число
-        try:
-            num = int(arg_lower)
-            if 1 <= num <= 12:
-                month = num
-            elif num > 2000:
-                year = num
+    # Текущий месяц
+    cur_month = now.month
+    cur_year = now.year
+
+    # Предыдущий месяц
+    if now.month == 1:
+        prev_month = 12
+        prev_year = cur_year - 1
+    else:
+        prev_month = cur_year - 1
+        prev_year = cur_year
+
+    cur_name = MONTH_NAMES_RU[cur_month]
+    prev_name = MONTH_NAMES_RU[prev_month]
+
+    keyboard = [
+        [InlineKeyboardButton(
+            f"📅 {cur_name} {cur_year} (текущий)",
+            callback_data=f"report_{cur_month}_{cur_year}"
+        )],
+        [InlineKeyboardButton(
+            f"📅 {prev_name} {prev_year} (прошлый)",
+            callback_data=f"report_{prev_month}_{prev_year}"
+        )],
+        [InlineKeyboardButton(
+            "🗓 Другой период...",
+            callback_data="report_pick"
+        )],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_month_keyboard(year: int) -> InlineKeyboardMarkup:
+    """Строит клавиатуру выбора месяца."""
+    now = now_ufa()
+    buttons = []
+    row = []
+    for m in range(1, 13):
+        # Не показываем будущие месяцы
+        if year == now.year and m > now.month:
             continue
-        except ValueError:
-            pass
-        # Попытка как название месяца
-        for key, val in MONTH_ALIASES.items():
-            if key in arg_lower:
-                month = val
-                break
+        name = MONTH_NAMES_RU[m][:3]  # Сокр. название: Янв, Фев...
+        row.append(InlineKeyboardButton(name, callback_data=f"report_{m}_{year}"))
+        if len(row) == 4:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
 
-    if month is None:
-        return None
-    return month, year
+    # Кнопки переключения года
+    nav = []
+    if year > now.year - 2:
+        nav.append(InlineKeyboardButton("◀ " + str(year - 1), callback_data=f"report_year_{year - 1}"))
+    nav.append(InlineKeyboardButton("❌ Отмена", callback_data="report_cancel"))
+    if year < now.year:
+        nav.append(InlineKeyboardButton(str(year + 1) + " ▶", callback_data=f"report_year_{year + 1}"))
+    buttons.append(nav)
+
+    return InlineKeyboardMarkup(buttons)
 
 
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args or []
-    parsed = parse_month_arg(args)
+    """Показывает меню выбора периода."""
+    await update.message.reply_text(
+        "📊 За какой период показать отчёт?",
+        reply_markup=build_report_keyboard()
+    )
 
-    now = now_ufa()
 
-    if parsed:
-        target_month, target_year = parsed
-    else:
-        # Без аргументов — текущий месяц
-        target_month = now.month
-        target_year = now.year
+async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия кнопок отчёта."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
-    month_name = MONTH_NAMES_RU[target_month]
-    await update.message.reply_text(f"📊 Считаю расходы за {month_name} {target_year}...")
+    # Выбор года для детального меню
+    if data.startswith("report_year_"):
+        year = int(data.replace("report_year_", ""))
+        await query.edit_message_text(
+            f"📅 Выбери месяц ({year}):",
+            reply_markup=build_month_keyboard(year)
+        )
+        return
 
+    # Открыть выбор месяца
+    if data == "report_pick":
+        now = now_ufa()
+        await query.edit_message_text(
+            f"📅 Выбери месяц ({now.year}):",
+            reply_markup=build_month_keyboard(now.year)
+        )
+        return
+
+    # Отмена
+    if data == "report_cancel":
+        await query.edit_message_text("Отменено.")
+        return
+
+    # Конкретный месяц: report_5_2026
+    if data.startswith("report_"):
+        parts = data.split("_")
+        if len(parts) == 3:
+            target_month = int(parts[1])
+            target_year = int(parts[2])
+            await query.edit_message_text(
+                f"📊 Считаю расходы за {MONTH_NAMES_RU[target_month]} {target_year}..."
+            )
+            await _send_report(query, target_month, target_year)
+
+
+async def _send_report(query, target_month: int, target_year: int):
+    """Получает данные и отправляет отчёт."""
     try:
+        now = now_ufa()
         report = get_monthly_report(month=target_month, year=target_year)
 
         if "ошибка" in report:
-            await update.message.reply_text(
-                f"❌ Не удалось получить отчёт: {report['ошибка']}"
-            )
+            await query.edit_message_text(f"❌ Ошибка: {report['ошибка']}")
             return
 
         month = report["месяц"]
@@ -112,10 +170,8 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"\n🔮 *Прогноз на месяц:* {forecast:,.0f} ₽")
                 lines.append(f"_(в среднем {daily_avg:,.0f} ₽/день)_")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
 
     except Exception as e:
-        logger.error(f"Ошибка handle_report: {e}")
-        await update.message.reply_text(
-            "❌ Не удалось сформировать отчёт. Попробуй позже."
-        )
+        logger.error(f"Ошибка _send_report: {e}")
+        await query.edit_message_text("❌ Не удалось сформировать отчёт.")
