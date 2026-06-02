@@ -9,7 +9,7 @@ SPREADSHEET_ID = "1vd5uDsilhAx8hrpLf88rBuogJIWIMB2LNs9DoyMMTLQ"
 
 
 # =====================
-# ПОСЛЕДНИЕ 3 ГРУППЫ (ПОЛНЫЙ ФИКС: берем с конца таблицы)
+# ПОСЛЕДНИЕ ГРУППЫ (ЧЕК = 1 GROUP_ID = 1 КНОПКА)
 # =====================
 def get_last_groups(limit=3):
     client = get_sheets_client()
@@ -20,11 +20,12 @@ def get_last_groups(limit=3):
     if len(rows) <= 1:
         return []
 
-    idx_group = 1  # G-ID
+    idx_group = 1
+    idx_date = 2
 
     groups = {}
 
-    # идем С КОНЦА таблицы (ключевой фикс)
+    # ВАЖНО: идём с конца — это фикс "последние записи"
     for row in reversed(rows[1:]):
         if len(row) <= idx_group:
             continue
@@ -33,19 +34,14 @@ def get_last_groups(limit=3):
         if not gid:
             continue
 
+        # сохраняем только первую найденную строку группы (это "чек")
         if gid not in groups:
-            groups[gid] = []
-
-        groups[gid].append(row)
+            groups[gid] = row
 
         if len(groups) >= limit:
-            # не гарантирует ровно limit групп, но резко фиксит "старые сверху"
-            pass
+            break
 
-    # превращаем обратно в список групп
-    result = list(groups.items())[:limit]
-
-    return result
+    return list(groups.items())
 
 
 # =====================
@@ -60,12 +56,10 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
 
-    for group_id, rows in groups:
-        last = rows[0]  # важно: первая из reversed = последняя в таблице
-
-        desc = last[13] if len(last) > 13 else "Операция"
-        amount = last[7] if len(last) > 7 else "0"
-        date = last[2] if len(last) > 2 else ""
+    for group_id, row in groups:
+        desc = row[13] if len(row) > 13 else "Операция"
+        amount = row[7] if len(row) > 7 else "0"
+        date = row[2] if len(row) > 2 else ""
 
         text = f"{desc} — {amount} ₽ | {date}"
 
@@ -84,7 +78,7 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================
-# УДАЛЕНИЕ
+# УДАЛЕНИЕ (ЧЕК ЦЕЛИКОМ)
 # =====================
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -124,4 +118,4 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     if new_rows:
         sheet.append_rows(new_rows)
 
-    await query.edit_message_text(f"Удалено записей: {deleted}")
+    await query.edit_message_text(f"Удалено записей (чек целиком): {deleted}")
