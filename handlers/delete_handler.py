@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)
 SPREADSHEET_ID = "1vd5uDsilhAx8hrpLf88rBuogJIWIMB2LNs9DoyMMTLQ"
 
 
-# =========================
-# 1. ПОЛУЧИТЬ ГРУППЫ
-# =========================
+# =====================
+# ПОСЛЕДНИЕ 3 ГРУППЫ
+# =====================
 def get_last_groups(limit=3):
     client = get_sheets_client()
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
@@ -19,13 +19,10 @@ def get_last_groups(limit=3):
     if len(rows) <= 1:
         return []
 
-    headers = rows[0]
-
-    # индексы
     idx_group = 1
+    idx_date = 2
     idx_desc = 13
     idx_sum = 7
-    idx_date = 2
 
     groups = {}
 
@@ -33,31 +30,30 @@ def get_last_groups(limit=3):
         if len(row) < 2:
             continue
 
-        group_id = row[idx_group]
+        gid = row[idx_group]
 
-        if group_id not in groups:
-            groups[group_id] = []
+        if gid not in groups:
+            groups[gid] = []
 
-        groups[group_id].append(row)
+        groups[gid].append(row)
 
-    # сортировка по последней записи в группе
-    def sort_key(item):
-        last_row = item[1][-1]
-        return last_row[idx_date]
+    def key_func(item):
+        last = item[1][-1]
+        return last[idx_date]
 
-    sorted_groups = sorted(groups.items(), key=sort_key)
+    sorted_groups = sorted(groups.items(), key=key_func)
 
     return sorted_groups[-limit:]
 
 
-# =========================
-# 2. ПОКАЗ МЕНЮ УДАЛЕНИЯ
-# =========================
+# =====================
+# МЕНЮ УДАЛЕНИЯ
+# =====================
 async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_last_groups(3)
 
     if not groups:
-        await update.message.reply_text("Нет операций для удаления.")
+        await update.message.reply_text("Нет операций")
         return
 
     keyboard = []
@@ -72,10 +68,7 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"{desc} — {amount} ₽ | {date}"
 
         keyboard.append([
-            InlineKeyboardButton(
-                text=text,
-                callback_data=f"delete_group:{group_id}"
-            )
+            InlineKeyboardButton(text, callback_data=f"delete_group:{group_id}")
         ])
 
     keyboard.append([
@@ -88,9 +81,9 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
-# 3. УДАЛЕНИЕ ГРУППЫ
-# =========================
+# =====================
+# УДАЛЕНИЕ
+# =====================
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -98,7 +91,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
 
     if data == "delete_cancel":
-        await query.edit_message_text("Удаление отменено.")
+        await query.edit_message_text("Удаление отменено")
         return
 
     if not data.startswith("delete_group:"):
@@ -111,23 +104,21 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     rows = sheet.get_all_values()
 
-    keep = []
+    new_rows = []
     deleted = 0
 
     for row in rows:
         if len(row) < 2:
-            keep.append(row)
+            new_rows.append(row)
             continue
 
         if row[1] == group_id:
             deleted += 1
             continue
 
-        keep.append(row)
+        new_rows.append(row)
 
     sheet.clear()
-    sheet.append_rows(keep)
+    sheet.append_rows(new_rows)
 
-    await query.edit_message_text(
-        f"Удалено записей: {deleted}"
-    )
+    await query.edit_message_text(f"Удалено записей: {deleted}")
