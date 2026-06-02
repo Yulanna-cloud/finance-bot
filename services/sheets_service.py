@@ -222,7 +222,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         headers = [h.strip().lower() for h in all_values[0]]
         logger.info(f"Заголовки таблицы: {headers}")
 
-        # Ищем индексы колонок
         def find_col_index(keywords: list, default: int) -> int:
             for kw in keywords:
                 for i, h in enumerate(headers):
@@ -234,18 +233,22 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                         return i
             return default
 
-        ic_date  = find_col_index(["дата"],                  2)
-        ic_month = find_col_index(["месяц"],                 4)
-        ic_year  = find_col_index(["год"],                   5)
-        ic_type  = find_col_index(["тип операции", "тип"],   6)
-        ic_sum   = find_col_index(["сумма"],                 7)
-        ic_cat   = find_col_index(["категория"],             9)
+        ic_date  = find_col_index(["дата"],                 2)
+        ic_month = find_col_index(["месяц"],                4)
+        ic_year  = find_col_index(["год"],                  5)
+        ic_type  = find_col_index(["тип операции", "тип"],  6)
+        ic_sum   = find_col_index(["сумма"],                7)
+        ic_cat   = find_col_index(["категория"],            9)
 
         logger.info(f"Индексы: дата={ic_date} месяц={ic_month} год={ic_year} тип={ic_type} сумма={ic_sum} кат={ic_cat}")
 
-        # Логируем первые 3 строки данных для диагностики
-        for i, row in enumerate(all_values[1:4]):
-            logger.info(f"Строка {i+1}: месяц='{row[ic_month] if ic_month < len(row) else '?'}' год='{row[ic_year] if ic_year < len(row) else '?'}' тип='{row[ic_type] if ic_type < len(row) else '?'}' сумма='{row[ic_sum] if ic_sum < len(row) else '?'}'")
+        # Логируем все строки для диагностики
+        for i, row in enumerate(all_values[1:]):
+            m = row[ic_month] if ic_month < len(row) else "?"
+            y = row[ic_year] if ic_year < len(row) else "?"
+            t = row[ic_type] if ic_type < len(row) else "?"
+            s = row[ic_sum] if ic_sum < len(row) else "?"
+            logger.info(f"Строка {i+1}: месяц='{m}' год='{y}' тип='{t}' сумма='{s}'")
 
         for raw_row in all_values[1:]:
             def cell(i):
@@ -282,7 +285,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             if amount <= 0:
                 continue
 
-            # "между счетами" не считаем расходом, наличные не считаем
             if row_type in ("наличные", "между счетами"):
                 continue
 
