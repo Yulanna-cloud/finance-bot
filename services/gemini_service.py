@@ -9,348 +9,244 @@ from groq import Groq
 logger = logging.getLogger(__name__)
 
 groq_api_key = os.getenv("GROQ_API_KEY")
-groq_client = None
-if groq_api_key:
-    groq_client = Groq(api_key=groq_api_key)
-else:
-    logger.error("GROQ_API_KEY не найден!")
+groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
-# Члены семьи — имя → полное имя
+# =========================
+# СЕМЬЯ
+# =========================
+
 FAMILY_MEMBERS = {
     "маргарита": "Маргарита П.",
-    "диана":     "Диана Ш.",
-    "алексей":   "Алексей П.",
-    "алёша":     "Алексей П.",
-    "алеша":     "Алексей П.",
-    "райса":     "Райса Г.",
-    "юланна":    "Юланна Г.",
-    "салават":   "Салават Г.",
-    "дамир":     "Дамир Г.",
-    "ольга":     "Ольга Г.",
+    "диана": "Диана Ш.",
+    "алексей": "Алексей П.",
+    "алёша": "Алексей П.",
+    "алеша": "Алексей П.",
+    "райса": "Райса Г.",
+    "юланна": "Юланна Г.",
+    "салават": "Салават Г.",
+    "дамир": "Дамир Г.",
+    "ольга": "Ольга Г.",
 }
-
-CATEGORY_RULES = {
-    "Продукты": [
-        "пятерочка", "магнит", "находка", "ежик", "светофор",
-        "монеточка", "перекресток", "лента", "вкусвилл",
-        "самокат", "яндекс лавка", "spar", "fix price", "дикси", "окей"
-    ],
-    "Кафе": [
-        "кофе", "кафе", "ресторан", "шаверма", "бургер",
-        "суши", "пицца", "starbucks", "surf coffee",
-        "вкусно и точка", "kfc", "burger king", "капучино",
-        "латте", "эспрессо", "фастфуд"
-    ],
-    "Транспорт": [
-        "бензин", "заправка", "лукойл", "роснефть", "азс",
-        "такси", "автобус", "uber", "яндекс go", "яндекс го"
-    ],
-    "Жилье":        ["жкх", "коммуналка", "аренда", "квартира"],
-    "Коммуналка":   ["свет", "электричество", "интернет", "wifi", "газ"],
-    "Медицина":     ["аптека", "врач", "клиника", "таблетки", "витамины", "36.6", "ригла"],
-    "Животные":     ["корм", "ветеринар", "whiskas", "royal canin"],
-    "Красота":      ["салон", "парикмахер", "маникюр", "тени", "тушь", "помада", "косметик"],
-    "Бытовая химия":["порошок", "мыло", "шампунь", "гель", "фейри", "зубная", "туалетная бумага"],
-    "Одежда":       ["одежда", "обувь", "куртка", "кроссовк", "wildberries", "ozon", "трусы", "носки"],
-    "Развлечения":  ["кино", "театр", "концерт", "музей"],
-    "Подписки":     ["яндекс плюс", "yandex plus", "netflix", "spotify", "icloud"],
-    "Табак":        ["сигарет", "табак", "папирос", "вейп"],
-    "Доход":        ["зарплата", "аванс", "оклад", "фриланс", "подработка"],
-    "Переводы":     ["перевод", "сбп"],
-    "Обучение":     ["курс", "обучение", "урок", "занятие", "секци", "кружок", "танц",
-                     "репетитор", "школа", "садик", "детский сад"],
-    "Дети":         ["детск", "игрушк", "lego", "подгузник"],
-    "Электротовары":["гирлянда", "лампочк", "батарейк", "удлинитель", "розетк", "провод"],
-}
-
-GROCERY_STORES = [
-    "пятерочка", "магнит", "находка", "ежик", "светофор",
-    "монеточка", "перекресток", "лента", "вкусвилл",
-    "самокат", "яндекс лавка", "spar", "fix price", "дикси", "окей"
-]
-
 
 def extract_family_member(text: str) -> str:
-    """Ищет имя члена семьи в тексте, возвращает полное имя или ''."""
     t = text.lower()
-    for key, full_name in FAMILY_MEMBERS.items():
+    for key, full in FAMILY_MEMBERS.items():
         if key in t:
-            return full_name
+            return full
     return ""
 
+# =========================
+# КАТЕГОРИИ
+# =========================
+
+CATEGORY_RULES = {
+    "Продукты": ["пятерочка", "магнит", "лента", "вкусвилл", "spar", "дикси", "окей"],
+    "Кафе": ["кофе", "кафе", "ресторан", "бургер", "пицца", "kfc", "latte", "espresso"],
+    "Транспорт": ["такси", "uber", "яндекс", "азс", "бензин"],
+    "Жилье": ["аренда", "жкх", "квартира"],
+    "Коммуналка": ["свет", "газ", "интернет", "wifi"],
+    "Медицина": ["аптека", "врач", "клиника"],
+    "Обучение": ["курс", "обучение", "урок", "танц", "кружок", "репетитор"],
+    "Дети": ["детск", "игрушк", "lego"],
+    "Красота": ["салон", "маникюр", "космет"],
+    "Одежда": ["одежд", "обув", "wildberries", "ozon"],
+    "Доход": ["зарплата", "аванс", "доход", "фриланс"],
+    "Переводы": ["перевод", "сбп"],
+    "Прочее": []
+}
+
+GROCERY_STORES = ["пятерочка","магнит","лента","вкусвилл","spar","дикси","окей"]
+
+# =========================
+# CAPTION — ГЛАВНЫЙ FIX
+# =========================
 
 def parse_caption_instruction(caption: str) -> dict:
-    """
-    Разбирает подпись к фото чека.
-    'обучение Маргарите танцы 2400' →
-    {категория: Обучение, подкатегория: Танцы, получатель: Маргарита П., сумма: 2400}
-    """
+    if not caption:
+        return None
+
     text_lower = caption.lower()
+
     result = {
-        "использовать_подпись": True,
+        "тип": "расход",
+        "сумма": None,
         "категория": "Прочее",
         "подкатегория": "",
+        "магазин": "",
         "описание": caption,
         "получатель": "",
-        "магазин": "",
-        "сумма": None,
+        "отправитель": "",
+        "source": "caption"
     }
 
-    # Ищем сумму
+    # сумма
     amounts = re.findall(r'\d[\d\s]*(?:[.,]\d+)?', caption)
     if amounts:
         try:
             result["сумма"] = float(amounts[-1].replace(" ", "").replace(",", "."))
-        except ValueError:
+        except:
             pass
 
-    # Ищем члена семьи
+    # семья
     family = extract_family_member(caption)
     if family:
         result["получатель"] = family
 
-    # Ищем категорию
-    for cat, keywords in CATEGORY_RULES.items():
-        for kw in keywords:
-            if kw in text_lower:
-                result["категория"] = cat
-                break
-        if result["категория"] != "Прочее":
+    # категория
+    for cat, keys in CATEGORY_RULES.items():
+        if any(k in text_lower for k in keys):
+            result["категория"] = cat
             break
 
-    # Подкатегория — если есть "танцы", "английский" и т.д.
-    subcat_map = {
-        "танц": "Танцы", "английск": "Английский", "математик": "Математика",
-        "рисован": "Рисование", "музык": "Музыка", "спорт": "Спорт",
-        "плавани": "Плавание", "футбол": "Футбол", "шахмат": "Шахматы",
+    # подкатегория
+    sub = {
+        "танц": "Танцы",
+        "англ": "Английский",
+        "математ": "Математика",
+        "рисов": "Рисование",
+        "спорт": "Спорт"
     }
-    for key, val in subcat_map.items():
-        if key in text_lower:
-            result["подкатегория"] = val
+
+    for k, v in sub.items():
+        if k in text_lower:
+            result["подкатегория"] = v
             break
 
     return result
 
+# =========================
+# IMAGE OCR (FIX: caption override)
+# =========================
+
+def read_receipt_image(image_bytes: bytes, caption: str = None) -> dict:
+    """
+    FIX:
+    caption теперь влияет на итог.
+    """
+    if not groq_client:
+        return {"ошибка": "нет GROQ", "позиции": []}
+
+    # 🔥 если есть подпись — она ПРИОРИТЕТ
+    caption_data = parse_caption_instruction(caption) if caption else None
+
+    if caption_data and caption_data.get("сумма"):
+        return caption_data
+
+    image_b64 = base64.b64encode(image_bytes).decode()
+
+    prompt = f"""
+Верни ТОЛЬКО JSON.
+
+Если есть текстовая подсказка пользователя — учитывай её:
+{caption if caption else "нет"}
+
+Формат:
+{{
+  "магазин": "",
+  "итого": 0,
+  "категории": [
+    {{"категория": "Продукты", "сумма": 0}}
+  ]
+}}
+"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                    {"type": "text", "text": prompt}
+                ]
+            }]
+        )
+
+        raw = response.choices[0].message.content
+        raw = raw.replace("```json","").replace("```","").strip()
+
+        data = json.loads(raw)
+
+        # merge caption if exists
+        if caption_data:
+            data["caption_override"] = caption_data
+
+        return data
+
+    except Exception as e:
+        logger.error(f"receipt error: {e}")
+        return {"ошибка": str(e), "позиции": []}
+
+# =========================
+# TEXT CLASSIFIER FIX
+# =========================
 
 def classify_text(text: str) -> dict:
     text_lower = text.lower()
 
     amounts = re.findall(r'\d[\d\s]*(?:[.,]\d+)?', text)
-    amounts = [float(a.replace(" ", "").replace(",", ".")) for a in amounts if a.strip()]
-    main_amount = amounts[0] if amounts else 0.0
+    amounts = [float(a.replace(" ","").replace(",", ".")) for a in amounts]
+    amount = amounts[0] if amounts else 0.0
 
-    # Тип операции
-    income_words = ["зарплата", "аванс", "доход", "получил", "получила",
-                    "пришло", "приход", "перевел", "перевела", "прислал", "прислала"]
-    op_type = "доход" if any(w in text_lower for w in income_words) else "расход"
+    op_type = "доход" if any(w in text_lower for w in ["зарплата","аванс","пришло","доход"]) else "расход"
 
-    # Член семьи
     family = extract_family_member(text)
 
-    # Детальный ввод с магазином
-    store_name = None
-    for store in GROCERY_STORES:
-        if store in text_lower:
-            store_name = store
+    # категория
+    category = "Прочее"
+    for cat, keys in CATEGORY_RULES.items():
+        if any(k in text_lower for k in keys):
+            category = cat
             break
 
-    if store_name and len(amounts) > 1:
-        return _classify_detailed(text, store_name, amounts, op_type)
-
-    # Словарный поиск
-    for category, keywords in CATEGORY_RULES.items():
-        for keyword in keywords:
-            if keyword in text_lower:
-                subcat = get_subcat(category, text_lower)
-                return {
-                    "тип": op_type,
-                    "сумма": main_amount,
-                    "категория": category,
-                    "подкатегория": subcat,
-                    "магазин": keyword.title() if category in ("Продукты", "Кафе") else "",
-                    "описание": text,
-                    "получатель": family if op_type == "расход" else "",
-                    "отправитель": family if op_type == "доход" else "",
-                    "уверенность": 0.95
-                }
-
-    if not groq_client:
-        return _default(text, main_amount, op_type)
-
-    # Передаём в Groq с контекстом о семье
-    family_hint = f'\nЧлен семьи упомянут: "{family}" — если расход, запиши в получатель; если доход — в отправитель.' if family else ""
-
-    prompt = f"""Ты помощник для учёта финансов. Верни ТОЛЬКО JSON без markdown.
-
-Операция: "{text}"
-{family_hint}
-
-Категории (выбери одну):
-Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Обучение, Дети,
-Животные, Красота, Бытовая химия, Одежда, Развлечения, Подписки, Табак, Доход, Переводы, Прочее
-
-Правила:
-- танцы/секция/кружок/урок/репетитор → категория "Обучение"
-- если упомянуто для кого (Маргарите, Диане) → запиши в "подкатегория" имя
-- зарплата/аванс/пришло/приход → тип "доход"
-
-{{
-  "тип": "{op_type}",
-  "сумма": {main_amount},
-  "категория": "...",
-  "подкатегория": "...",
-  "магазин": "",
-  "описание": "...",
-  "получатель": "",
-  "отправитель": "",
-  "уверенность": 0.8
-}}"""
-
-    try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        result = json.loads(raw)
-        if not result.get("сумма") and main_amount:
-            result["сумма"] = main_amount
-        # Добавляем семью если Groq не заполнил
-        if family and op_type == "расход" and not result.get("получатель"):
-            result["получатель"] = family
-        if family and op_type == "доход" and not result.get("отправитель"):
-            result["отправитель"] = family
-        return result
-    except Exception as e:
-        logger.error(f"Ошибка Groq classify: {e}")
-        return _default(text, main_amount, op_type)
-
-
-def _classify_detailed(text: str, store_name: str, amounts: list, op_type: str) -> dict:
-    if not groq_client:
-        return _default(text, amounts[0] if amounts else 0, op_type)
-
-    prompt = f"""Разбери покупку и верни ТОЛЬКО JSON массив без markdown.
-
-Текст: "{text}"
-
-Правила:
-- Первая сумма — общий чек магазина
-- Остальные суммы — отдельные товары
-- Остаток (общая - перечисленные) → Продукты
-- Если остаток <= 0 — не добавляй Продукты
-
-Категории: Табак, Бытовая химия, Красота, Одежда, Электротовары, Продукты, Прочее
-
-[{{"категория":"Табак","сумма":185,"описание":"сигареты"}}]"""
-
-    try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        items = json.loads(raw)
-        return {
-            "тип": op_type,
-            "магазин": store_name.title(),
-            "мультизапись": True,
-            "позиции": items
-        }
-    except Exception as e:
-        logger.error(f"Ошибка детального разбора: {e}")
-        return _default(text, amounts[0] if amounts else 0, op_type)
-
-
-def get_subcat(category: str, text_lower: str) -> str:
-    subcats = {
-        "Продукты": {"молочка": ["молоко", "кефир", "йогурт", "сыр", "творог"],
-                     "мясо": ["мясо", "курица", "говядина", "фарш"],
-                     "хлеб": ["хлеб", "батон", "булка"]},
-        "Кафе":     {"кофе": ["кофе", "капучино", "латте", "эспрессо"],
-                     "фастфуд": ["бургер", "kfc", "вкусно", "шаверма"]},
-        "Транспорт":{"бензин": ["бензин", "заправка", "лукойл", "роснефть"],
-                     "такси": ["такси", "uber", "яндекс go"]},
-        "Обучение": {"Танцы": ["танц"], "Английский": ["английск"],
-                     "Математика": ["математик"], "Рисование": ["рисован"]},
-    }
-    if category in subcats:
-        for subcat, words in subcats[category].items():
-            if any(w in text_lower for w in words):
-                return subcat
-    return ""
-
-
-def _default(text, amount, op_type):
     return {
-        "тип": op_type, "сумма": amount, "категория": "Прочее",
-        "подкатегория": "", "магазин": "", "описание": text,
-        "получатель": "", "отправитель": "", "уверенность": 0.3
+        "тип": op_type,
+        "сумма": amount,
+        "категория": category,
+        "подкатегория": "",
+        "магазин": "",
+        "описание": text,
+        "получатель": family if op_type == "расход" else "",
+        "отправитель": family if op_type == "доход" else "",
+        "уверенность": 0.9,
+        "source": "text"
     }
 
+# =========================
+# VOICE
+# =========================
 
-def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
+def transcribe_voice(audio_bytes: bytes) -> str:
     if not groq_client:
         return ""
+
+    audio = io.BytesIO(audio_bytes)
+    audio.name = "voice.ogg"
+
     try:
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = "voice.ogg"
-        transcription = groq_client.audio.transcriptions.create(
+        r = groq_client.audio.transcriptions.create(
             model="whisper-large-v3",
-            file=audio_file,
+            file=audio,
             language="ru"
         )
-        return transcription.text.strip()
+        return r.text.strip()
     except Exception as e:
-        logger.error(f"Ошибка голоса Groq: {e}")
+        logger.error(f"voice error: {e}")
         return ""
 
+# =========================
+# DEFAULT
+# =========================
 
-def read_receipt_image(image_bytes: bytes) -> dict:
-    if not groq_client:
-        return {"ошибка": "нет GROQ_API_KEY", "позиции": []}
-    try:
-        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        prompt = """Прочитай чек и верни ТОЛЬКО JSON без markdown.
-{
-  "магазин": "название",
-  "дата": "дата или null",
-  "итого": общая_сумма,
-  "категории": [
-    {"категория": "Продукты", "сумма": 320.5}
-  ]
-}
-Категории: Продукты, Бытовая химия, Табак, Красота, Одежда, Прочее"""
-
-        response = groq_client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                {"type": "text", "text": prompt}
-            ]}]
-        )
-        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
-    except Exception as e:
-        logger.error(f"Ошибка чека Groq: {e}")
-        return {"ошибка": str(e), "позиции": []}
-
-
-def parse_bank_statement(text: str) -> list:
-    if not groq_client:
-        return []
-    try:
-        prompt = f"""Разбери выписку, верни ТОЛЬКО JSON массив без markdown:
-[{{"дата":"DD.MM.YYYY","сумма":число,"тип":"расход/доход","категория":"...","магазин":"...","описание":"...","уверенность":0.8}}]
-Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Одежда, Развлечения, Подписки, Табак, Бытовая химия, Доход, Прочее
-Выписка:
-{text[:4000]}"""
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
-    except Exception as e:
-        logger.error(f"Ошибка выписки Groq: {e}")
-        return []
+def _default(text, amount=0):
+    return {
+        "тип": "расход",
+        "сумма": amount,
+        "категория": "Прочее",
+        "подкатегория": "",
+        "магазин": "",
+        "описание": text,
+        "получатель": "",
+        "отправитель": "",
+        "уверенность": 0.2
+    }
