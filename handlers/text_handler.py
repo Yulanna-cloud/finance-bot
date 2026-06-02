@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from services.sheets_service import write_operation, smart_query
+from services.sheets_service import write_operation
 from services.gemini_service import normalize
 
 KEYWORDS = ["сколько","покажи","найди","итого","отчет","статистика","всего"]
