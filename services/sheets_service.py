@@ -20,7 +20,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Часовой пояс Уфа = UTC+5
 UFA_TZ = timezone(timedelta(hours=5))
 
 MONTH_MAP = {
@@ -120,7 +119,7 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         ]
 
         sheet.append_row(row, value_input_option="USER_ENTERED")
-        logger.info(f"Записана операция {op_id}: {operation.get('категория')} {operation.get('сумма')}р")
+        logger.info(f"Записана операция {op_id}: {operation.get('тип')} {operation.get('категория')} {operation.get('сумма')}р отправитель={operation.get('отправитель','')}")
         return True
 
     except Exception as e:
@@ -223,28 +222,30 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         headers = [h.strip().lower() for h in all_values[0]]
         logger.info(f"Заголовки таблицы: {headers}")
 
-        # Ищем индексы колонок по точному или частичному совпадению
+        # Ищем индексы колонок
         def find_col_index(keywords: list, default: int) -> int:
-            # Сначала пробуем точное совпадение
             for kw in keywords:
                 for i, h in enumerate(headers):
                     if h == kw.lower():
                         return i
-            # Потом частичное
             for kw in keywords:
                 for i, h in enumerate(headers):
                     if kw.lower() in h:
                         return i
             return default
 
-        ic_date  = find_col_index(["дата"],                   2)
-        ic_month = find_col_index(["месяц", "month"],         4)
-        ic_year  = find_col_index(["год"],                    5)
-        ic_type  = find_col_index(["тип операции", "тип"],    6)
-        ic_sum   = find_col_index(["сумма"],                  7)
-        ic_cat   = find_col_index(["категория", "категори"],  9)
+        ic_date  = find_col_index(["дата"],                  2)
+        ic_month = find_col_index(["месяц"],                 4)
+        ic_year  = find_col_index(["год"],                   5)
+        ic_type  = find_col_index(["тип операции", "тип"],   6)
+        ic_sum   = find_col_index(["сумма"],                 7)
+        ic_cat   = find_col_index(["категория"],             9)
 
-        logger.info(f"Индексы колонок: дата={ic_date} месяц={ic_month} год={ic_year} тип={ic_type} сумма={ic_sum} категория={ic_cat}")
+        logger.info(f"Индексы: дата={ic_date} месяц={ic_month} год={ic_year} тип={ic_type} сумма={ic_sum} кат={ic_cat}")
+
+        # Логируем первые 3 строки данных для диагностики
+        for i, row in enumerate(all_values[1:4]):
+            logger.info(f"Строка {i+1}: месяц='{row[ic_month] if ic_month < len(row) else '?'}' год='{row[ic_year] if ic_year < len(row) else '?'}' тип='{row[ic_type] if ic_type < len(row) else '?'}' сумма='{row[ic_sum] if ic_sum < len(row) else '?'}'")
 
         for raw_row in all_values[1:]:
             def cell(i):
@@ -257,7 +258,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             row_sum   = cell(ic_sum)
             row_cat   = cell(ic_cat)
 
-            # Определяем, попадает ли строка в нужный период
             in_period = False
             if month_matches(row_month, target_month_name) and str(target_year) in row_year:
                 in_period = True
@@ -282,7 +282,8 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             if amount <= 0:
                 continue
 
-            if row_type == "наличные":
+            # "между счетами" не считаем расходом, наличные не считаем
+            if row_type in ("наличные", "между счетами"):
                 continue
 
             count += 1
@@ -290,12 +291,11 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
 
             if row_type == "доход":
                 income += amount
-            elif row_type in ("расход", "между счетами", ""):
+            else:
                 total_expense += amount
                 expenses[category] = expenses.get(category, 0) + amount
 
         top_categories = sorted(expenses.items(), key=lambda x: x[1], reverse=True)[:5]
-
         logger.info(f"Отчёт за {target_month_name} {target_year}: доходы={income}, расходы={total_expense}, операций={count}")
 
         return {
@@ -368,7 +368,7 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
                             return i
                 return default
 
-            ai_month = ac(["месяц", "month"], 4)
+            ai_month = ac(["месяц"], 4)
             ai_year  = ac(["год"], 5)
             ai_date  = ac(["дата"], 2)
 
@@ -461,34 +461,36 @@ def smart_query(query_text: str) -> dict:
             return default
 
         idx_date   = find_col(["дата"],             2)
-        idx_month  = find_col(["месяц", "month"],   4)
+        idx_month  = find_col(["месяц"],            4)
         idx_type   = find_col(["тип"],              6)
         idx_amount = find_col(["сумма"],            7)
         idx_cat    = find_col(["категори"],         9)
         idx_shop   = find_col(["магазин"],          12)
         idx_desc   = find_col(["товар", "описани"], 13)
         idx_recv   = find_col(["получател"],        14)
+        idx_sender = find_col(["отправител"],       27)
 
         found_lines = []
         total_amount = 0.0
 
         for row in ops_rows[1:]:
-            while len(row) <= max(idx_cat, idx_desc, idx_amount, idx_recv, idx_shop):
+            while len(row) <= max(idx_cat, idx_desc, idx_amount, idx_recv, idx_shop, idx_sender):
                 row.append("")
 
-            cat_val   = row[idx_cat].lower()
-            desc_val  = row[idx_desc].lower()
-            recv_val  = row[idx_recv].lower()
-            shop_val  = row[idx_shop].lower()
-            t_val     = row[idx_type].lower()
-            row_month = row[idx_month].strip()
+            cat_val    = row[idx_cat].lower()
+            desc_val   = row[idx_desc].lower()
+            recv_val   = row[idx_recv].lower()
+            shop_val   = row[idx_shop].lower()
+            sender_val = row[idx_sender].lower()
+            t_val      = row[idx_type].lower()
+            row_month  = row[idx_month].strip()
 
             is_income_row = "доход" in t_val or "доход" in cat_val
 
             if target_month and not month_matches(row_month, target_month):
                 continue
 
-            text_to_search = f"{cat_val} {desc_val} {recv_val} {shop_val}".replace(".", " ")
+            text_to_search = f"{cat_val} {desc_val} {recv_val} {shop_val} {sender_val}".replace(".", " ")
 
             match_found = False
             if is_aleksey_search:
@@ -503,7 +505,7 @@ def smart_query(query_text: str) -> dict:
                     total_amount += amount_num
                 except ValueError:
                     pass
-                d_text = row[idx_recv] or row[idx_desc] or row[idx_shop]
+                d_text = row[idx_sender] or row[idx_recv] or row[idx_desc] or row[idx_shop]
                 found_lines.append(f"📅 {date} | 💰 {amount_str} ₽ | _{d_text}_")
 
         if not found_lines:
