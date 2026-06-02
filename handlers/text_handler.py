@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from services.sheets_service import write_operation
-from services.gemini_service import normalize
+from services.gemini_service import classify_text
 
 KEYWORDS = ["сколько","покажи","найди","итого","отчет","статистика","всего"]
 
@@ -18,7 +18,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(res.get("ответ","нет данных"))
         return
 
-    data = normalize(text)
+    data = classify_text(text)
 
     ok = write_operation(data)
 
