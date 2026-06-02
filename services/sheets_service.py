@@ -6,8 +6,10 @@ import os
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -22,21 +24,6 @@ SCOPES = [
 
 UFA_TZ = timezone(timedelta(hours=5))
 
-MONTH_MAP = {
-    "январь": ["январь", "january", "jan"],
-    "февраль": ["февраль", "february", "feb"],
-    "март": ["март", "march", "mar"],
-    "апрель": ["апрель", "april", "apr"],
-    "май": ["май", "may"],
-    "июнь": ["июнь", "june", "jun"],
-    "июль": ["июль", "july", "jul"],
-    "август": ["август", "august", "aug"],
-    "сентябрь": ["сентябрь", "september", "sep"],
-    "октябрь": ["октябрь", "october", "oct"],
-    "ноябрь": ["ноябрь", "november", "nov"],
-    "декабрь": ["декабрь", "december", "dec"],
-}
-
 MONTH_NAMES_RU = {
     1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
@@ -44,16 +31,13 @@ MONTH_NAMES_RU = {
 }
 
 
-def now_ufa() -> datetime:
+def now_ufa():
     return datetime.now(tz=UFA_TZ)
 
 
-def month_matches(cell_value: str, target_month: str) -> bool:
-    cell = cell_value.strip().lower()
-    variants = MONTH_MAP.get(target_month.lower(), [target_month.lower()])
-    return any(cell == v for v in variants)
-
-
+# =========================
+# GOOGLE CLIENT
+# =========================
 def get_sheets_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
@@ -69,18 +53,27 @@ def get_sheets_client():
     return gspread.authorize(creds)
 
 
+# =========================
+# НОМЕР ОПЕРАЦИИ
+# =========================
 def get_next_op_id(sheet) -> str:
     try:
         all_ids = sheet.col_values(1)
         op_ids = [x for x in all_ids if str(x).startswith("OP-")]
+
         if not op_ids:
             return "OP-0001"
+
         last_num = max(int(x.replace("OP-", "")) for x in op_ids)
         return f"OP-{last_num + 1:04d}"
+
     except Exception:
         return f"OP-{now_ufa().strftime('%Y%m%d%H%M%S')}"
 
 
+# =========================
+# ОДНА ОПЕРАЦИЯ
+# =========================
 def write_operation(operation: dict, source: str = "telegram") -> bool:
     try:
         client = get_sheets_client()
@@ -88,19 +81,25 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
 
         now = now_ufa()
+
         op_date = operation.get("дата") or now.strftime("%d.%m.%Y")
         op_time = now.strftime("%H:%M")
-        month = MONTH_NAMES_RU[now.month]
-        year = now.year
 
         op_id = get_next_op_id(sheet)
-        group_id = op_id.replace("OP-", "G-")
+
+        # ❗ одиночная операция = отдельная группа
+        group_id = f"G-SINGLE-{uuid.uuid4().hex[:8]}"
 
         confidence = operation.get("уверенность", 0.8)
         status = "обработано" if confidence >= 0.8 else "требует проверки"
 
         row = [
-            op_id, group_id, op_date, op_time, month, str(year),
+            op_id,
+            group_id,
+            op_date,
+            op_time,
+            MONTH_NAMES_RU[now.month],
+            str(now.year),
             operation.get("тип", "расход"),
             operation.get("сумма", ""),
             "RUB",
@@ -110,18 +109,22 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
             operation.get("магазин", ""),
             operation.get("описание", ""),
             operation.get("получатель", ""),
-            "карта", "",
+            "карта",
+            "",
             source,
             operation.get("исходный_текст", ""),
-            "", "", "",
+            "",
+            "",
+            "",
             str(confidence),
-            "Нет", status, "groq",
+            "Нет",
+            status,
+            "groq",
             now.strftime("%d.%m.%Y %H:%M"),
             operation.get("отправитель", ""),
         ]
 
         sheet.append_row(row, value_input_option="USER_ENTERED")
-        logger.info(f"Записана операция {op_id}")
         return True
 
     except Exception as e:
@@ -130,7 +133,7 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
 
 
 # =========================
-# 🔥 ВОТ ТУТ ГЛАВНЫЙ ФИКС
+# ПАКЕТНАЯ ЗАПИСЬ (ГЛАВНОЕ ИСПРАВЛЕНИЕ)
 # =========================
 def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
     try:
@@ -140,35 +143,32 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
 
         all_ids = sheet.col_values(1)
         op_ids = [x for x in all_ids if str(x).startswith("OP-")]
+
         last_num = max((int(x.replace("OP-", "")) for x in op_ids), default=0)
 
         now = now_ufa()
-
-        # 🔥 ОДНА ГРУППА = ОДИН ЧЕК / ВЫПИСКА
-        last_num += 1
-        group_id = f"G-{last_num:04d}"
-
         rows = []
 
-        for i, operation in enumerate(operations):
+        # ❗ ВАЖНО: 1 ГРУППА = 1 ДОКУМЕНТ (чек / выписка)
+        batch_group_id = f"G-BATCH-{uuid.uuid4().hex[:8]}"
 
-            op_id = f"OP-{last_num:04d}-{i+1}"
+        for operation in operations:
+            last_num += 1
+            op_id = f"OP-{last_num:04d}"
 
             op_date = operation.get("дата") or now.strftime("%d.%m.%Y")
             op_time = now.strftime("%H:%M")
-            month = MONTH_NAMES_RU[now.month]
-            year = now.year
 
             confidence = operation.get("уверенность", 0.9)
             status = "обработано" if confidence >= 0.8 else "требует проверки"
 
             row = [
                 op_id,
-                group_id,  # 🔥 ВСЕ СТРОКИ В ОДНОЙ ГРУППЕ
+                batch_group_id,   # ❗ ВСЕ строки одной выписки = 1 группа
                 op_date,
                 op_time,
-                month,
-                str(year),
+                MONTH_NAMES_RU[now.month],
+                str(now.year),
                 operation.get("тип", "расход"),
                 operation.get("сумма", ""),
                 "RUB",
@@ -197,26 +197,20 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
 
         if rows:
             sheet.append_rows(rows, value_input_option="USER_ENTERED")
-            logger.info(f"Записано {len(rows)} строк одним group_id={group_id}")
 
         return len(rows), 0
 
     except Exception as e:
         logger.error(f"Ошибка пакетной записи: {e}")
+
         ok = 0
         errors = 0
+
         for op in operations:
-            time.sleep(2)
+            time.sleep(1)
             if write_operation(op, source):
                 ok += 1
             else:
                 errors += 1
+
         return ok, errors
-        
-def smart_query(query_text: str) -> dict:
-    return {
-        "ответ": "Функция smart_query временно отключена после обновления системы. Она будет восстановлена позже."
-    }
-
-
-# дальше остальной код НЕ ТРОГАЕМ
