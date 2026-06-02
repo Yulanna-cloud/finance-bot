@@ -12,7 +12,7 @@ groq_api_key = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 # =========================
-# SAFE HELPERS
+# SAFE
 # =========================
 
 def safe_float(x):
@@ -41,7 +41,7 @@ def find_family(text):
     return ""
 
 # =========================
-# STORE (СТАБИЛЬНО)
+# STORE
 # =========================
 
 STORES = [
@@ -57,7 +57,7 @@ def find_store(text):
     return ""
 
 # =========================
-# CATEGORY RULES
+# CATEGORY
 # =========================
 
 CATEGORIES = {
@@ -70,7 +70,7 @@ CATEGORIES = {
     "Дети": ["детск","игрушк"],
     "Красота": ["маникюр","салон"],
     "Одежда": ["одежд","обув","ozon","wildberries"],
-    "Доход": ["зарплата","аванс","доход"]
+    "Доход": ["зарплата","доход","аванс"]
 }
 
 def find_category(text):
@@ -82,7 +82,7 @@ def find_category(text):
     return "Прочее"
 
 # =========================
-# CORE NORMALIZER (ЕДИНСТВЕННАЯ ИСТИНА)
+# CORE
 # =========================
 
 def normalize(text: str):
@@ -107,14 +107,26 @@ def normalize(text: str):
     }
 
 # =========================
-# CAPTION PRIORITY
+# BACKWARD COMPATIBILITY (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ)
+# =========================
+
+def classify_text(text: str):
+    """
+    ВАЖНО:
+    Старые handler'ы ожидают classify_text.
+    Поэтому возвращаем normalize().
+    """
+    return normalize(text)
+
+# =========================
+# CAPTION
 # =========================
 
 def parse_caption(caption):
     return normalize(caption)
 
 # =========================
-# IMAGE SAFE MODE
+# IMAGE
 # =========================
 
 def read_receipt_image(image_bytes, caption=None):
@@ -145,11 +157,12 @@ def read_receipt_image(image_bytes, caption=None):
 
         return normalize(str(json.loads(raw)))
 
-    except:
+    except Exception as e:
+        logger.error(e)
         return normalize("")
 
 # =========================
-# VOICE
+# VOICE (СОВМЕСТИМОСТЬ)
 # =========================
 
 def transcribe_voice(audio_bytes):
@@ -170,7 +183,7 @@ def transcribe_voice(audio_bytes):
         return ""
 
 # =========================
-# COMPAT
+# BANK
 # =========================
 
 def parse_bank_statement(text):
