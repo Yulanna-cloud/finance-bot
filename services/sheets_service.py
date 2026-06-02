@@ -214,3 +214,62 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
                 errors += 1
 
         return ok, errors
+
+def smart_query(query_text: str) -> dict:
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
+
+        rows = sheet.get_all_values()
+
+        if not rows or len(rows) <= 1:
+            return {"ответ": "В таблице пока нет операций."}
+
+        query = query_text.lower()
+
+        found = []
+        total = 0.0
+
+        headers = [h.lower() for h in rows[0]]
+
+        def idx(name):
+            for i, h in enumerate(headers):
+                if name in h:
+                    return i
+            return 0
+
+        i_date = idx("дата")
+        i_sum = idx("сумма")
+        i_cat = idx("категория")
+        i_shop = idx("магазин")
+
+        for row in rows[1:]:
+            while len(row) <= max(i_date, i_sum, i_cat, i_shop):
+                row.append("")
+
+            text = " ".join(row).lower()
+
+            if query not in text:
+                continue
+
+            try:
+                amount = float(str(row[i_sum]).replace(" ", "").replace(",", "."))
+                total += amount
+            except:
+                amount = 0
+
+            found.append(f"{row[i_date]} | {row[i_shop]} | {amount} ₽")
+
+        if not found:
+            return {"ответ": "Ничего не найдено"}
+
+        return {
+            "ответ": "🔎 Найдено:\n" +
+                     "\n".join(found[-10:]) +
+                     f"\n\nИтого: {total:.2f} ₽"
+        }
+
+    except Exception as e:
+        logger.error(f"smart_query error: {e}")
+        return {"ошибка": "ошибка поиска"}
