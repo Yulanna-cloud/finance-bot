@@ -7,9 +7,8 @@ logger = logging.getLogger(__name__)
 
 SPREADSHEET_ID = "1vd5uDsilhAx8hrpLf88rBuogJIWIMB2LNs9DoyMMTLQ"
 
-
 # =====================
-# ПОСЛЕДНИЕ 3 ГРУППЫ
+# ПОСЛЕДНИЕ 3 ГРУППЫ (ФИКС: берем последние реально добавленные)
 # =====================
 def get_last_groups(limit=3):
     client = get_sheets_client()
@@ -21,33 +20,32 @@ def get_last_groups(limit=3):
 
     idx_group = 1
     idx_date = 2
-    idx_desc = 13
-    idx_sum = 7
 
     groups = {}
 
     for row in rows[1:]:
-        if len(row) < 2:
+        if len(row) <= idx_group:
             continue
 
         gid = row[idx_group]
+        if not gid:
+            continue
 
-        if gid not in groups:
-            groups[gid] = []
+        groups.setdefault(gid, []).append(row)
 
-        groups[gid].append(row)
+    # сортировка по последней дате внутри группы
+    def last_date(group_item):
+        group_rows = group_item[1]
+        last_row = group_rows[-1]
+        return last_row[idx_date] if len(last_row) > idx_date else ""
 
-    def key_func(item):
-        last = item[1][-1]
-        return last[idx_date]
-
-    sorted_groups = sorted(groups.items(), key=key_func)
+    sorted_groups = sorted(groups.items(), key=last_date)
 
     return sorted_groups[-limit:]
 
 
 # =====================
-# МЕНЮ УДАЛЕНИЯ
+# МЕНЮ УДАЛЕНИЯ (ФИКС: показываем реальные последние 3 группы)
 # =====================
 async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_last_groups(3)
@@ -82,7 +80,7 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================
-# УДАЛЕНИЕ
+# УДАЛЕНИЕ (ФИКС: удаление только группы + защита от мусора)
 # =====================
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -108,7 +106,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     deleted = 0
 
     for row in rows:
-        if len(row) < 2:
+        if len(row) <= 1:
             new_rows.append(row)
             continue
 
@@ -119,6 +117,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
         new_rows.append(row)
 
     sheet.clear()
-    sheet.append_rows(new_rows)
+    if new_rows:
+        sheet.append_rows(new_rows)
 
     await query.edit_message_text(f"Удалено записей: {deleted}")
