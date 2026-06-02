@@ -12,7 +12,7 @@ from handlers.delete_handler import show_delete_menu, handle_delete_callback
 logging.basicConfig(level=logging.INFO)
 
 
-TOKEN = "PUT_YOUR_TOKEN_HERE"
+TOKEN = "8650147262:AAHe9kzNi7GDaPvF1I_uxB5-CjZNOdr7cUo"
 
 
 async def start(update: Update, context):
