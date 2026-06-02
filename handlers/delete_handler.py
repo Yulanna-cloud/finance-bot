@@ -7,46 +7,51 @@ logger = logging.getLogger(__name__)
 
 SPREADSHEET_ID = "1vd5uDsilhAx8hrpLf88rBuogJIWIMB2LNs9DoyMMTLQ"
 
+# =========================
+# ЛОГ УДАЛЕНИЙ (UNDO)
+# =========================
+LAST_DELETE_CACHE = {}  # group_id -> rows backup
 
-# =====================
-# ПОСЛЕДНИЕ ГРУППЫ (ЧЕК = 1 GROUP_ID = 1 КНОПКА)
-# =====================
+
+# =========================
+# ПОЛУЧИТЬ ПОСЛЕДНИЕ 3 ГРУППЫ
+# =========================
 def get_last_groups(limit=3):
     client = get_sheets_client()
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
 
     rows = sheet.get_all_values()
-
     if len(rows) <= 1:
         return []
 
-    idx_group = 1
-    idx_date = 2
-
+    # group_id = колонка 2 (индекс 1)
     groups = {}
 
-    # ВАЖНО: идём с конца — это фикс "последние записи"
-    for row in reversed(rows[1:]):
-        if len(row) <= idx_group:
+    for row in rows[1:]:
+        if len(row) < 2:
             continue
 
-        gid = row[idx_group]
-        if not gid:
-            continue
+        group_id = row[1]
 
-        # сохраняем только первую найденную строку группы (это "чек")
-        if gid not in groups:
-            groups[gid] = row
+        if group_id not in groups:
+            groups[group_id] = []
 
-        if len(groups) >= limit:
-            break
+        groups[group_id].append(row)
 
-    return list(groups.items())
+    # сортировка по последней дате внутри группы
+    def sort_key(item):
+        rows = item[1]
+        last_row = rows[-1]
+        return last_row[2] if len(last_row) > 2 else ""
+
+    sorted_groups = sorted(groups.items(), key=sort_key)
+
+    return sorted_groups[-limit:]
 
 
-# =====================
+# =========================
 # МЕНЮ УДАЛЕНИЯ
-# =====================
+# =========================
 async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_last_groups(3)
 
@@ -56,15 +61,21 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
 
-    for group_id, row in groups:
-        desc = row[13] if len(row) > 13 else "Операция"
-        amount = row[7] if len(row) > 7 else "0"
-        date = row[2] if len(row) > 2 else ""
+    for group_id, rows in reversed(groups):
+        last = rows[-1]
 
-        text = f"{desc} — {amount} ₽ | {date}"
+        desc = last[12] if len(last) > 12 else "Операция"   # магазин
+        amount = last[7] if len(last) > 7 else "0"
+        date = last[2] if len(last) > 2 else ""
+
+        # показываем ТОЛЬКО группу, не строки
+        text = f"🧾 {desc} — {amount} ₽ | {date} (в группе {len(rows)} операций)"
 
         keyboard.append([
-            InlineKeyboardButton(text, callback_data=f"delete_group:{group_id}")
+            InlineKeyboardButton(
+                text,
+                callback_data=f"delete_confirm:{group_id}"
+            )
         ])
 
     keyboard.append([
@@ -72,50 +83,85 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await update.message.reply_text(
-        "Выбери что удалить:",
+        "Выбери группу для удаления:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# =====================
-# УДАЛЕНИЕ (ЧЕК ЦЕЛИКОМ)
-# =====================
+# =========================
+# CALLBACK УДАЛЕНИЯ
+# =========================
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     data = query.data
 
+    # отмена
     if data == "delete_cancel":
         await query.edit_message_text("Удаление отменено")
         return
 
-    if not data.startswith("delete_group:"):
-        return
+    # подтверждение
+    if data.startswith("delete_confirm:"):
+        group_id = data.split(":")[1]
 
-    group_id = data.split(":")[1]
+        client = get_sheets_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
 
-    client = get_sheets_client()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
+        rows = sheet.get_all_values()
 
-    rows = sheet.get_all_values()
+        to_delete = []
+        new_rows = []
 
-    new_rows = []
-    deleted = 0
+        for row in rows:
+            if len(row) < 2:
+                new_rows.append(row)
+                continue
 
-    for row in rows:
-        if len(row) <= 1:
+            if row[1] == group_id:
+                to_delete.append(row)
+                continue
+
             new_rows.append(row)
-            continue
 
-        if row[1] == group_id:
-            deleted += 1
-            continue
+        # сохраняем для undo
+        LAST_DELETE_CACHE[group_id] = to_delete
 
-        new_rows.append(row)
-
-    sheet.clear()
-    if new_rows:
+        sheet.clear()
         sheet.append_rows(new_rows)
 
-    await query.edit_message_text(f"Удалено записей (чек целиком): {deleted}")
+        keyboard = [
+            [InlineKeyboardButton("↩️ Отменить удаление", callback_data=f"undo_delete:{group_id}")],
+            [InlineKeyboardButton("OK", callback_data="delete_done")]
+        ]
+
+        await query.edit_message_text(
+            f"Удалено {len(to_delete)} операций",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # UNDO
+    if data.startswith("undo_delete:"):
+        group_id = data.split(":")[1]
+
+        if group_id not in LAST_DELETE_CACHE:
+            await query.edit_message_text("Нечего восстанавливать")
+            return
+
+        client = get_sheets_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
+
+        restore_rows = LAST_DELETE_CACHE[group_id]
+
+        sheet.append_rows(restore_rows)
+
+        del LAST_DELETE_CACHE[group_id]
+
+        await query.edit_message_text("Восстановлено")
+        return
+
+    if data == "delete_done":
+        await query.edit_message_text("Готово")
+        return
