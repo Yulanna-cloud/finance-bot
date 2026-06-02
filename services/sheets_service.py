@@ -119,7 +119,7 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
         ]
 
         sheet.append_row(row, value_input_option="USER_ENTERED")
-        logger.info(f"Записана операция {op_id}: {operation.get('тип')} {operation.get('категория')} {operation.get('сумма')}р отправитель={operation.get('отправитель','')}")
+        logger.info(f"Записана операция {op_id}: {operation.get('тип')} {operation.get('категория')} {operation.get('сумма')}р")
         return True
 
     except Exception as e:
@@ -194,6 +194,11 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
         return ok, errors
 
 
+def _get_cell(row: list, i: int) -> str:
+    """Безопасно возвращает значение ячейки как строку."""
+    return str(row[i]).strip() if i < len(row) else ""
+
+
 def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) -> dict:
     try:
         now = now_ufa()
@@ -220,7 +225,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             }
 
         headers = [h.strip().lower() for h in all_values[0]]
-        logger.info(f"Заголовки таблицы: {headers}")
 
         def find_col_index(keywords: list, default: int) -> int:
             for kw in keywords:
@@ -242,25 +246,15 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
 
         logger.info(f"Индексы: дата={ic_date} месяц={ic_month} год={ic_year} тип={ic_type} сумма={ic_sum} кат={ic_cat}")
 
-        # Логируем все строки для диагностики
-        for i, row in enumerate(all_values[1:]):
-            m = row[ic_month] if ic_month < len(row) else "?"
-            y = row[ic_year] if ic_year < len(row) else "?"
-            t = row[ic_type] if ic_type < len(row) else "?"
-            s = row[ic_sum] if ic_sum < len(row) else "?"
-            logger.info(f"Строка {i+1}: месяц='{m}' год='{y}' тип='{t}' сумма='{s}'")
-
         for raw_row in all_values[1:]:
-            def cell(i):
-                return raw_row[i].strip() if i < len(raw_row) else ""
+            row_date  = _get_cell(raw_row, ic_date)
+            row_month = _get_cell(raw_row, ic_month)
+            row_year  = _get_cell(raw_row, ic_year)
+            row_type  = _get_cell(raw_row, ic_type).lower()
+            row_sum   = _get_cell(raw_row, ic_sum)
+            row_cat   = _get_cell(raw_row, ic_cat)
 
-            row_date  = cell(ic_date)
-            row_month = cell(ic_month)
-            row_year  = cell(ic_year)
-            row_type  = cell(ic_type).lower()
-            row_sum   = cell(ic_sum)
-            row_cat   = cell(ic_cat)
-
+            # Проверяем период
             in_period = False
             if month_matches(row_month, target_month_name) and str(target_year) in row_year:
                 in_period = True
@@ -277,8 +271,9 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             if not in_period:
                 continue
 
+            # Парсим сумму — убираем пробелы как разделители тысяч
             try:
-                amount = float(row_sum.replace(",", ".").replace(" ", "") or 0)
+                amount = float(row_sum.replace(" ", "").replace("\xa0", "").replace(",", ".") or 0)
             except (ValueError, TypeError):
                 continue
 
@@ -375,12 +370,9 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
             ai_date  = ac(["дата"], 2)
 
             for raw_row in all_values[1:]:
-                def rcell(i):
-                    return raw_row[i].strip() if i < len(raw_row) else ""
-
-                row_month = rcell(ai_month)
-                row_year  = rcell(ai_year)
-                row_date  = rcell(ai_date)
+                row_month = _get_cell(raw_row, ai_month)
+                row_year  = _get_cell(raw_row, ai_year)
+                row_date  = _get_cell(raw_row, ai_date)
                 in_period = False
 
                 if month_matches(row_month, month_name) and str(year) in row_year:
