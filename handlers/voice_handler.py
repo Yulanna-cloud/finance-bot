@@ -4,6 +4,7 @@
 import logging
 import io
 import json
+import re
 from telegram import Update
 from telegram.ext import ContextTypes
 from services.gemini_service import transcribe_voice, classify_text, groq_client
@@ -11,12 +12,26 @@ from services.sheets_service import write_operation, write_operations_batch
 
 logger = logging.getLogger(__name__)
 
+FAMILY_NAMES = {
+    "маргарита": "Маргарита П.",
+    "диана":     "Диана Ш.",
+    "алексей":   "Алексей П.",
+    "райса":     "Райса Г.",
+    "юланна":    "Юланна Г.",
+    "салават":   "Салават Г.",
+    "дамир":     "Дамир Г.",
+    "ольга":     "Ольга Г.",
+}
+
+def extract_sender(text: str) -> str:
+    t = text.lower()
+    for key, full_name in FAMILY_NAMES.items():
+        if key in t:
+            return full_name
+    return ""
+
 
 def normalize_numbers(text: str) -> str:
-    """
-    Конвертирует числа-слова в цифры через Groq.
-    'два по двадцать один рубль' -> '2 по 21 рубль'
-    """
     if not groq_client:
         return text
     try:
@@ -39,10 +54,6 @@ def normalize_numbers(text: str) -> str:
 
 
 def parse_multi_items(text: str) -> list | None:
-    """
-    Разбирает текст с несколькими покупками через Groq.
-    Возвращает список позиций или None если не удалось.
-    """
     if not groq_client:
         return None
     try:
@@ -74,18 +85,13 @@ def parse_multi_items(text: str) -> list | None:
 
 
 def has_multiple_items(text: str) -> bool:
-    """Определяет, содержит ли текст несколько покупок."""
-    import re
-    # Несколько сумм в тексте (цифры или слова-числа)
     digit_amounts = re.findall(r'\d+\s*(?:рубл|руб|₽)', text.lower())
     word_numbers = ["рубль", "рублей", "рубля"]
     word_count = sum(text.lower().count(w) for w in word_numbers)
-    total_amounts = len(digit_amounts) + word_count
-    return total_amounts > 1
+    return (len(digit_amounts) + word_count) > 1
 
 
 async def _send_multi_items(update, items: list, магазин: str, source: str):
-    """Записывает несколько позиций в таблицу."""
     if not items:
         await update.message.reply_text("🤔 Не смогла разобрать позиции.")
         return
@@ -116,17 +122,10 @@ async def _send_multi_items(update, items: list, магазин: str, source: st
 
     ok, errors = write_operations_batch(operations, source=source)
     total = sum(op["сумма"] for op in operations)
-
-    lines = []
-    for op in operations:
-        lines.append(f"• {op['описание']} — {op['сумма']:.0f} ₽ ({op['категория']})")
-
+    lines = [f"• {op['описание']} — {op['сумма']:.0f} ₽ ({op['категория']})" for op in operations]
     store_str = f"🏪 {магазин}\n\n" if магазин else ""
     await update.message.reply_text(
-        f"💸 Записано {ok} позиций!\n\n"
-        f"{store_str}"
-        + "\n".join(lines)
-        + f"\n\n💰 Итого: *{total:.0f} ₽*",
+        f"💸 Записано {ok} позиций!\n\n{store_str}" + "\n".join(lines) + f"\n\n💰 Итого: *{total:.0f} ₽*",
         parse_mode="Markdown"
     )
 
@@ -150,48 +149,31 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"📝 Услышала: _{transcribed}_", parse_mode="Markdown")
 
-        # Если несколько покупок — разбираем детально
         if has_multiple_items(transcribed):
             await update.message.reply_text("🔍 Вижу несколько позиций, разбираю...")
-
-            # Нормализуем числа-слова в цифры
             normalized = normalize_numbers(transcribed)
 
-            # Определяем магазин из текста (ищем по корню слова)
-            import re
             магазин = ""
             store_patterns = [
-                ("пятерочк", "Пятерочка"),
-                ("магнит", "Магнит"),
-                ("лент", "Лента"),
-                ("перекресток", "Перекресток"),
-                ("перекрёсток", "Перекресток"),
-                ("вкусвилл", "ВкусВилл"),
-                ("самокат", "Самокат"),
-                ("яндекс лавк", "Яндекс Лавка"),
-                ("вайлдберриз", "Wildberries"),
-                ("wildberries", "Wildberries"),
-                ("озон", "Ozon"),
-                ("ozon", "Ozon"),
+                ("пятерочк", "Пятерочка"), ("магнит", "Магнит"), ("лент", "Лента"),
+                ("перекресток", "Перекресток"), ("перекрёсток", "Перекресток"),
+                ("вкусвилл", "ВкусВилл"), ("самокат", "Самокат"),
+                ("яндекс лавк", "Яндекс Лавка"), ("вайлдберриз", "Wildberries"),
+                ("wildberries", "Wildberries"), ("озон", "Ozon"), ("ozon", "Ozon"),
             ]
-            text_lower = normalized.lower()
             for pattern, name in store_patterns:
-                if pattern in text_lower:
+                if pattern in normalized.lower():
                     магазин = name
                     break
 
             items = parse_multi_items(normalized)
-
             if items:
                 await _send_multi_items(update, items, магазин, source="голос")
                 return
-            # Если не получилось разобрать — падаем на обычный режим
 
-        # Одна покупка — стандартная обработка
         normalized = normalize_numbers(transcribed)
         result = classify_text(normalized)
 
-        # Старая мультизапись (из classify_text)
         if result.get("мультизапись"):
             позиции = result.get("позиции", [])
             магазин = result.get("магазин", "")
@@ -234,7 +216,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         result["исходный_текст"] = transcribed
         result.setdefault("получатель", "")
-        result.setdefault("отправитель", "")
+
+        # Если доход — ищем отправителя в тексте
+        if result.get("тип") == "доход":
+            sender = extract_sender(transcribed)
+            result["отправитель"] = sender
+        else:
+            result.setdefault("отправитель", "")
+
         ok = write_operation(result, source="голос")
 
         if ok:
@@ -244,12 +233,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             subcat_str = f" / {subcat}" if subcat else ""
             store = result.get("магазин", "")
             store_str = f"\n🏪 {store}" if store else ""
+            sender = result.get("отправитель", "")
+            sender_str = f"\n👤 От: {sender}" if sender else ""
             confidence = result.get("уверенность", 0)
             warning = "\n⚠️ _Низкая уверенность — проверь в таблице_" if confidence < 0.8 else ""
             await update.message.reply_text(
                 f"{emoji} Записано!\n\n"
                 f"💰 *{result['сумма']:.0f} ₽*\n"
-                f"📂 {cat}{subcat_str}{store_str}"
+                f"📂 {cat}{subcat_str}{store_str}{sender_str}"
                 f"{warning}",
                 parse_mode="Markdown"
             )
