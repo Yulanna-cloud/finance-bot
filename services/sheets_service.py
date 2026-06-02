@@ -212,6 +212,11 @@ def write_operations_batch(operations: list, source: str) -> tuple[int, int]:
             else:
                 errors += 1
         return ok, errors
+        
+def smart_query(query_text: str) -> dict:
+    return {
+        "ответ": "Функция smart_query временно отключена после обновления системы. Она будет восстановлена позже."
+    }
 
 
 # дальше остальной код НЕ ТРОГАЕМ
