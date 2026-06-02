@@ -36,6 +36,25 @@ def extract_family_member(text: str) -> str:
     return ""
 
 # =========================
+# STORE (КРИТИЧЕСКИЙ FIX)
+# =========================
+
+def extract_store(text: str) -> str:
+    t = text.lower()
+
+    stores = [
+        "пятерочка", "магнит", "лента", "вкусвилл",
+        "spar", "дикси", "окей", "fix price",
+        "перекресток", "ашан"
+    ]
+
+    for s in stores:
+        if s in t:
+            return s.title()
+
+    return ""
+
+# =========================
 # CATEGORY RULES
 # =========================
 
@@ -54,53 +73,8 @@ CATEGORY_RULES = {
     "Переводы": ["перевод","сбп"],
 }
 
-GROCERY_STORES = CATEGORY_RULES["Продукты"]
-
 # =========================
-# CAPTION PARSER (ВАЖНО)
-# =========================
-
-def parse_caption_instruction(caption: str) -> dict:
-    if not caption:
-        return None
-
-    text = caption.lower()
-
-    result = {
-        "тип": "расход",
-        "сумма": None,
-        "категория": "Прочее",
-        "подкатегория": "",
-        "магазин": "",
-        "описание": caption,
-        "получатель": "",
-        "отправитель": "",
-        "source": "caption"
-    }
-
-    # сумма
-    amounts = re.findall(r'\d[\d\s]*(?:[.,]\d+)?', caption)
-    if amounts:
-        try:
-            result["сумма"] = float(amounts[-1].replace(" ","").replace(",","."))
-        except:
-            pass
-
-    # семья
-    fam = extract_family_member(caption)
-    if fam:
-        result["получатель"] = fam
-
-    # категория
-    for cat, keys in CATEGORY_RULES.items():
-        if any(k in text for k in keys):
-            result["категория"] = cat
-            break
-
-    return result
-
-# =========================
-# TEXT CLASSIFY
+# TEXT CLASSIFIER
 # =========================
 
 def classify_text(text: str) -> dict:
@@ -112,7 +86,8 @@ def classify_text(text: str) -> dict:
 
     op_type = "доход" if any(w in t for w in ["зарплата","доход","аванс","пришло"]) else "расход"
 
-    fam = extract_family_member(text)
+    family = extract_family_member(text)
+    store = extract_store(text)
 
     category = "Прочее"
     for cat, keys in CATEGORY_RULES.items():
@@ -125,33 +100,57 @@ def classify_text(text: str) -> dict:
         "сумма": amount,
         "категория": category,
         "подкатегория": "",
-        "магазин": "",
+        "магазин": store,
         "описание": text,
-        "получатель": fam if op_type == "расход" else "",
-        "отправитель": fam if op_type == "доход" else "",
+        "получатель": family if op_type == "расход" else "",
+        "отправитель": family if op_type == "доход" else "",
         "уверенность": 0.9
     }
 
 # =========================
-# BANK STATEMENT (FIX IMPORT ERROR)
+# CAPTION PARSER
+# =========================
+
+def parse_caption_instruction(caption: str):
+    if not caption:
+        return None
+
+    t = caption.lower()
+
+    amounts = re.findall(r'\d[\d\s]*(?:[.,]\d+)?', caption)
+    amount = None
+    if amounts:
+        try:
+            amount = float(amounts[-1].replace(" ","").replace(",","."))
+
+        except:
+            pass
+
+    return {
+        "тип": "расход",
+        "сумма": amount,
+        "категория": "Прочее",
+        "подкатегория": "",
+        "магазин": extract_store(caption),
+        "описание": caption,
+        "получатель": extract_family_member(caption),
+        "отправитель": "",
+        "уверенность": 0.8,
+        "source": "caption"
+    }
+
+# =========================
+# BANK COMPATIBILITY (НЕ ЛОМАТЬ IMPORT)
 # =========================
 
 def parse_bank_statement(text: str):
-    """
-    ВАЖНО: функция восстановлена для совместимости file_handler.py
-    """
     if not groq_client:
         return []
 
     try:
-        prompt = f"""
-Разбери банковскую выписку в JSON массив:
-{text[:4000]}
-"""
-
         r = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role":"user","content":prompt}]
+            messages=[{"role":"user","content":text[:4000]}]
         )
 
         raw = r.choices[0].message.content
@@ -164,28 +163,20 @@ def parse_bank_statement(text: str):
         return []
 
 # =========================
-# IMAGE (SAFE VERSION)
+# IMAGE
 # =========================
 
 def read_receipt_image(image_bytes: bytes, caption: str = None):
     if not groq_client:
         return {"ошибка":"нет GROQ","позиции":[]}
 
-    # если есть подпись — приоритет
     caption_data = parse_caption_instruction(caption) if caption else None
     if caption_data and caption_data.get("сумма"):
         return caption_data
 
     image_b64 = base64.b64encode(image_bytes).decode()
 
-    prompt = """
-Верни JSON:
-{
-  "магазин":"",
-  "итого":0,
-  "категории":[{"категория":"Продукты","сумма":0}]
-}
-"""
+    prompt = "Верни JSON чек"
 
     try:
         r = groq_client.chat.completions.create(
@@ -201,6 +192,7 @@ def read_receipt_image(image_bytes: bytes, caption: str = None):
 
         raw = r.choices[0].message.content
         raw = raw.replace("```json","").replace("```","").strip()
+
         return json.loads(raw)
 
     except Exception as e:
@@ -215,16 +207,15 @@ def transcribe_voice(audio_bytes: bytes):
     if not groq_client:
         return ""
 
-    try:
-        audio = io.BytesIO(audio_bytes)
-        audio.name = "voice.ogg"
+    audio = io.BytesIO(audio_bytes)
+    audio.name = "voice.ogg"
 
+    try:
         r = groq_client.audio.transcriptions.create(
             model="whisper-large-v3",
             file=audio,
             language="ru"
         )
-
         return r.text.strip()
 
     except Exception as e:
