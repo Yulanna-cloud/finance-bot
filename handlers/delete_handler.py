@@ -1,35 +1,29 @@
 """
 Обработчик команды /delete — удаление последних сессий ввода.
-Одна сессия = вся выписка / весь чек / одна голосовая / одна текстовая запись.
-Группируем по источнику + время записи (с точностью до минуты).
 """
 
 import logging
-from datetime import datetime
 from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from services.sheets_service import get_sheets_client
+from services.sheets_service import get_sheets_client, _get_cell
 
 logger = logging.getLogger(__name__)
 
 SPREADSHEET_ID = "1vd5uDsilhAx8hrpLf88rBuogJIWIMB2LNs9DoyMMTLQ"
 
 SOURCE_LABELS = {
-    "выписка_сбер":  "📄 Выписка Сбербанка",
-    "голос":         "🎤 Голосовое сообщение",
-    "telegram_текст":"💬 Текстовое сообщение",
-    "telegram":      "💬 Текстовое сообщение",
-    "фото":          "📷 Фото чека",
-    "чек":           "📷 Фото чека",
+    "выписка_сбер":   "📄 Выписка",
+    "голос":          "🎤 Голос",
+    "telegram_текст": "💬 Текст",
+    "telegram":       "💬 Текст",
+    "фото":           "📷 Фото чека",
+    "чек_фото":       "📷 Фото чека",
+    "чек_qr":         "📷 QR-чек",
 }
 
 
 def get_recent_sessions(n: int = 3) -> list:
-    """
-    Возвращает последние N сессий ввода.
-    Сессия = уникальная пара (источник + время записи до минуты).
-    """
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -49,30 +43,27 @@ def get_recent_sessions(n: int = 3) -> list:
             return default
 
         i_source   = find_col(["источник"], 17)
-        i_recorded = find_col(["дата"], 26)   # колонка AA — время записи в таблицу
-        i_date     = find_col(["дата"],  2)   # колонка C — дата операции
+        i_recorded = find_col(["дата создания", "дата запис"], 26)
+        i_date     = find_col(["дата"], 2)
         i_amount   = find_col(["сумма"], 7)
         i_cat      = find_col(["категори"], 9)
+        i_desc     = find_col(["товар", "описани"], 13)
+        i_shop     = find_col(["магазин"], 12)
 
-        # Группируем строки по ключу (источник + время_записи_до_минуты)
-        # Порядок сохраняем — идём с конца
-        sessions = {}   # key -> {rows, source, recorded_at, examples}
+        sessions = {}
         session_order = []
 
         for row_idx, row in enumerate(data_rows):
-            actual_row = row_idx + 2  # номер строки в Google Sheets
+            actual_row = row_idx + 2
 
-            def safe(i):
-                return row[i].strip() if i < len(row) else ""
+            source   = _get_cell(row, i_source)
+            recorded = _get_cell(row, i_recorded)
+            op_date  = _get_cell(row, i_date)
+            amount   = _get_cell(row, i_amount)
+            cat      = _get_cell(row, i_cat)
+            desc     = _get_cell(row, i_desc)
+            shop     = _get_cell(row, i_shop)
 
-            source    = safe(i_source)
-            recorded  = safe(i_recorded)
-            op_date   = safe(i_date)
-            amount    = safe(i_amount)
-            cat       = safe(i_cat)
-
-            # Ключ сессии: источник + время записи (до минуты)
-            # Если времени нет — используем номер строки как уникальный ключ
             rec_minute = recorded[:16] if len(recorded) >= 16 else recorded
             key = f"{source}|{rec_minute}"
 
@@ -84,32 +75,26 @@ def get_recent_sessions(n: int = 3) -> list:
                     "op_date": op_date,
                     "total": 0.0,
                     "count": 0,
+                    "first_cat": cat,
+                    "first_desc": desc,
+                    "first_shop": shop,
                 }
                 session_order.append(key)
 
             sessions[key]["rows"].append(actual_row)
             sessions[key]["count"] += 1
             try:
-                sessions[key]["total"] += float(amount.replace(" ", "").replace(",", "."))
+                sessions[key]["total"] += float(
+                    amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
+                )
             except (ValueError, TypeError):
                 pass
 
-        # Берём последние N сессий
         last_keys = session_order[-n:]
         result = []
         for key in reversed(last_keys):
             s = sessions[key]
-            source_label = SOURCE_LABELS.get(s["source"], s["source"] or "Неизвестно")
-            result.append({
-                "key": key,
-                "rows": s["rows"],
-                "source": s["source"],
-                "label": source_label,
-                "recorded_at": s["recorded_at"],
-                "op_date": s["op_date"],
-                "count": s["count"],
-                "total": s["total"],
-            })
+            result.append(s | {"key": key})
 
         return result
 
@@ -118,8 +103,32 @@ def get_recent_sessions(n: int = 3) -> list:
         return []
 
 
+def format_session_button(s: dict) -> str:
+    """Формирует читаемый текст кнопки."""
+    source_label = SOURCE_LABELS.get(s["source"], s["source"] or "Запись")
+    date_str = s["op_date"] or (s["recorded_at"][:10] if s["recorded_at"] else "?")
+    total = s["total"]
+    count = s["count"]
+
+    # Что за запись
+    what = s["first_desc"] or s["first_shop"] or s["first_cat"] or ""
+    if len(what) > 20:
+        what = what[:20] + "…"
+
+    if count == 1:
+        # Одна строка — показываем сумму и что
+        if what:
+            label = f"{source_label}: {what} — {total:,.0f} ₽ | {date_str}"
+        else:
+            label = f"{source_label}: {total:,.0f} ₽ | {date_str}"
+    else:
+        # Несколько строк — показываем итого
+        label = f"{source_label}: {count} записей, {total:,.0f} ₽ | {date_str}"
+
+    return label[:64]
+
+
 def delete_rows(row_numbers: list) -> bool:
-    """Удаляет строки по номерам (с конца, чтобы не сбивать нумерацию)."""
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -134,7 +143,6 @@ def delete_rows(row_numbers: list) -> bool:
 
 
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает последние 3 сессии ввода с кнопками удаления."""
     await update.message.reply_text("🔍 Загружаю последние записи...")
 
     sessions = get_recent_sessions(3)
@@ -144,41 +152,30 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     keyboard = []
-    for i, s in enumerate(sessions):
-        # Формируем подпись кнопки
-        date_str = s["op_date"] or s["recorded_at"][:10]
-        count_str = f"{s['count']} стр." if s["count"] > 1 else "1 запись"
-        total_str = f"{s['total']:,.0f} ₽" if s["total"] > 0 else ""
-        btn_text = f"{s['label']} | {date_str} | {count_str}"
-        if total_str:
-            btn_text += f" | {total_str}"
+    lines = ["🗑 *Выбери что удалить:*\n"]
 
+    for i, s in enumerate(sessions):
+        btn_text = format_session_button(s)
         keyboard.append([
-            InlineKeyboardButton(
-                text=btn_text[:60],
-                callback_data=f"del_{i}"
-            )
+            InlineKeyboardButton(text=btn_text, callback_data=f"del_{i}")
         ])
 
     keyboard.append([
         InlineKeyboardButton("❌ Отмена", callback_data="del_cancel")
     ])
 
-    # Сохраняем сессии в context для callback
     context.user_data["delete_sessions"] = sessions
 
     await update.message.reply_text(
-        "🗑 *Выбери что удалить:*\n_(последние 3 сессии ввода)_",
+        "🗑 *Выбери что удалить:*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатие кнопки удаления."""
     query = update.callback_query
     await query.answer()
-
     data = query.data
 
     if data == "del_cancel":
@@ -200,15 +197,14 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
         session = sessions[idx]
         rows = session["rows"]
 
-        await query.edit_message_text(f"⏳ Удаляю {len(rows)} строк...")
-
         success = delete_rows(rows)
 
         if success:
+            total_str = f"{session['total']:,.0f} ₽" if session["total"] > 0 else ""
             await query.edit_message_text(
-                f"✅ Удалено!\n\n"
-                f"*{session['label']}*\n"
-                f"Строк удалено: {len(rows)}",
+                f"✅ Удалено {len(rows)} записей\n"
+                f"*{SOURCE_LABELS.get(session['source'], session['source'])}*"
+                + (f" — {total_str}" if total_str else ""),
                 parse_mode="Markdown"
             )
         else:
