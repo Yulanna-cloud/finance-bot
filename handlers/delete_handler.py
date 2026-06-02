@@ -7,23 +7,25 @@ logger = logging.getLogger(__name__)
 
 SPREADSHEET_ID = "1vd5uDsilhAx8hrpLf88rBuogJIWIMB2LNs9DoyMMTLQ"
 
+
 # =====================
-# ПОСЛЕДНИЕ 3 ГРУППЫ (ФИКС: берем последние реально добавленные)
+# ПОСЛЕДНИЕ 3 ГРУППЫ (ПОЛНЫЙ ФИКС: берем с конца таблицы)
 # =====================
 def get_last_groups(limit=3):
     client = get_sheets_client()
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
 
     rows = sheet.get_all_values()
+
     if len(rows) <= 1:
         return []
 
-    idx_group = 1
-    idx_date = 2
+    idx_group = 1  # G-ID
 
     groups = {}
 
-    for row in rows[1:]:
+    # идем С КОНЦА таблицы (ключевой фикс)
+    for row in reversed(rows[1:]):
         if len(row) <= idx_group:
             continue
 
@@ -31,21 +33,23 @@ def get_last_groups(limit=3):
         if not gid:
             continue
 
-        groups.setdefault(gid, []).append(row)
+        if gid not in groups:
+            groups[gid] = []
 
-    # сортировка по последней дате внутри группы
-    def last_date(group_item):
-        group_rows = group_item[1]
-        last_row = group_rows[-1]
-        return last_row[idx_date] if len(last_row) > idx_date else ""
+        groups[gid].append(row)
 
-    sorted_groups = sorted(groups.items(), key=last_date)
+        if len(groups) >= limit:
+            # не гарантирует ровно limit групп, но резко фиксит "старые сверху"
+            pass
 
-    return sorted_groups[-limit:]
+    # превращаем обратно в список групп
+    result = list(groups.items())[:limit]
+
+    return result
 
 
 # =====================
-# МЕНЮ УДАЛЕНИЯ (ФИКС: показываем реальные последние 3 группы)
+# МЕНЮ УДАЛЕНИЯ
 # =====================
 async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_last_groups(3)
@@ -56,8 +60,8 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
 
-    for group_id, rows in reversed(groups):
-        last = rows[-1]
+    for group_id, rows in groups:
+        last = rows[0]  # важно: первая из reversed = последняя в таблице
 
         desc = last[13] if len(last) > 13 else "Операция"
         amount = last[7] if len(last) > 7 else "0"
@@ -80,7 +84,7 @@ async def show_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================
-# УДАЛЕНИЕ (ФИКС: удаление только группы + защита от мусора)
+# УДАЛЕНИЕ
 # =====================
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
