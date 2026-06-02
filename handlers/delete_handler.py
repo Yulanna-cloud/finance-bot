@@ -24,30 +24,47 @@ def get_last_groups(limit=3):
     if len(rows) <= 1:
         return []
 
-    # group_id = колонка 2 (индекс 1)
     groups = {}
 
     for row in rows[1:]:
-        if len(row) < 2:
+        if len(row) < 3:
             continue
 
         group_id = row[1]
+        op_type = row[6].lower() if len(row) > 6 else ""
+
+        # ❌ выкидываем мусорные группы
+        if op_type in ("между счетами", "наличные"):
+            continue
 
         if group_id not in groups:
             groups[group_id] = []
 
         groups[group_id].append(row)
 
-    # сортировка по последней дате внутри группы
+    # ❗ фильтр: оставляем только реальные "документы"
+    filtered_groups = {}
+
+    for gid, items in groups.items():
+        if len(items) == 0:
+            continue
+
+        # если 1 строка и это техническое — выкидываем
+        if len(items) == 1:
+            cat = items[0][9].lower() if len(items[0]) > 9 else ""
+            if cat in ("между счетами", ""):
+                continue
+
+        filtered_groups[gid] = items
+
     def sort_key(item):
         rows = item[1]
-        last_row = rows[-1]
-        return last_row[2] if len(last_row) > 2 else ""
+        last = rows[-1]
+        return last[2] if len(last) > 2 else ""
 
-    sorted_groups = sorted(groups.items(), key=sort_key)
+    sorted_groups = sorted(filtered_groups.items(), key=sort_key)
 
     return sorted_groups[-limit:]
-
 
 # =========================
 # МЕНЮ УДАЛЕНИЯ
