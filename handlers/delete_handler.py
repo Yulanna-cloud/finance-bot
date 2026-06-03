@@ -4,6 +4,7 @@
 """
 
 import logging
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from services.sheets_service import get_sheets_client, _get_cell
@@ -20,6 +21,33 @@ SOURCE_LABELS = {
     "чек_фото":       "📷 Фото чека",
     "чек_qr":         "📷 QR-чек",
 }
+
+
+def normalize_date(val: str) -> str:
+    """Приводит дату любого формата к DD.MM.YYYY"""
+    if not val:
+        return ""
+    # Уже нормальный формат
+    if len(val) == 10 and val[2] == "." and val[5] == ".":
+        return val
+    # datetime из Excel: "2026-06-01 00:00:00"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(val[:10], fmt[:8] if "H" not in fmt else fmt).strftime("%d.%m.%Y")
+        except ValueError:
+            pass
+    try:
+        return datetime.strptime(val[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        return val[:10]
+
+
+def normalize_time(val: str) -> str:
+    """Приводит время к HH:MM"""
+    if not val:
+        return ""
+    # "19:52:00" → "19:52"
+    return val[:5]
 
 
 def get_recent_sessions(n: int = 3) -> list:
@@ -56,8 +84,8 @@ def get_recent_sessions(n: int = 3) -> list:
             actual_row = row_idx + 2
 
             source   = _get_cell(row, i_source)
-            op_date  = _get_cell(row, i_date)
-            op_time  = _get_cell(row, i_time)
+            op_date  = normalize_date(_get_cell(row, i_date))
+            op_time  = normalize_time(_get_cell(row, i_time))
             amount   = _get_cell(row, i_amount)
             op_type  = _get_cell(row, i_type).lower()
             cat      = _get_cell(row, i_cat)
@@ -65,15 +93,13 @@ def get_recent_sessions(n: int = 3) -> list:
             shop     = _get_cell(row, i_shop)
 
             # Ключ сессии: источник + дата + время до минуты + тип операции
-            # Это надёжно разделяет расход и доход даже если введены в одну минуту
-            time_minute = op_time[:5] if len(op_time) >= 5 else op_time
-            key = f"{source}|{op_date}|{time_minute}|{op_type}"
+            # Разделяет расход и доход даже если введены в одну минуту
+            key = f"{source}|{op_date}|{op_time}|{op_type}"
 
             if key not in sessions:
                 sessions[key] = {
                     "rows": [],
                     "source": source,
-                    "recorded_at": f"{op_date} {op_time}",
                     "op_date": op_date,
                     "expense_total": 0.0,
                     "count": 0,
@@ -89,9 +115,10 @@ def get_recent_sessions(n: int = 3) -> list:
             # Считаем суммы (кроме переброски между счетами)
             if op_type not in ("между счетами",):
                 try:
-                    sessions[key]["expense_total"] += float(
+                    amt = float(
                         amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
                     )
+                    sessions[key]["expense_total"] += amt
                 except (ValueError, TypeError):
                     pass
 
