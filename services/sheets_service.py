@@ -533,12 +533,9 @@ def smart_query(query_text: str) -> dict:
                 if target_person in all_text:
                     # Уточняем: доход или расход
                     is_income_row = "доход" in row_type
-                    if is_income_search and is_income_row:
+                   if is_income_search and is_income_row:
                         match = True
-                    elif not is_income_search and not is_income_row:
-                        match = True
-                    elif not is_income_search and not is_income_row:
-                        # нет уточнения — показываем всё
+                    elif not is_income_search:
                         match = True
 
             # Поиск по категории (без имени человека)
