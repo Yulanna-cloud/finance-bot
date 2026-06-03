@@ -529,19 +529,19 @@ def smart_query(query_text: str) -> dict:
             match = False
 
             # Поиск по имени человека
-            if target_person:
-                if target_person in all_text:
-                    # Уточняем: доход или расход
-                    is_income_row = "доход" in row_type
-                   if is_income_search and is_income_row:
-                        match = True
-                    elif not is_income_search:
-                        match = True
-
-            # Поиск по категории (без имени человека)
-            elif cat_search:
-                if cat_search.lower() in row_cat.lower():
+        if target_person:
+            if target_person in all_text:
+                # Уточняем: доход или расход
+                is_income_row = "доход" in row_type
+                if is_income_search and is_income_row:
                     match = True
+                elif not is_income_search:
+                    match = True
+
+        # Поиск по категории (без имени человека)
+        elif cat_search:
+            if cat_search.lower() in row_cat.lower():
+                match = True
 
             if not match:
                 continue
