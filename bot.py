@@ -14,7 +14,10 @@ from handlers.photo_handler import handle_photo
 from handlers.file_handler import handle_file
 from handlers.report_handler import handle_report, handle_report_callback
 from handlers.archive_handler import handle_archive, handle_smart_query
-from handlers.delete_handler import handle_delete, handle_delete_callback
+from handlers.delete_handler import (
+    handle_delete, handle_delete_callback,
+    handle_restore, handle_restore_callback
+)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -37,6 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/otchet — отчёт за месяц\n"
         "/archive — архивировать прошлый месяц\n"
         "/delete — удалить ошибочную запись\n"
+        "/restore — восстановить последнее удаление\n"
         "/pomosh — эта справка\n\n"
         "Поехали! 🚀"
     )
@@ -60,9 +64,11 @@ def main():
     app.add_handler(CommandHandler("otchet", handle_report))
     app.add_handler(CommandHandler("archive", handle_archive))
     app.add_handler(CommandHandler("delete", handle_delete))
+    app.add_handler(CommandHandler("restore", handle_restore))
 
     app.add_handler(CallbackQueryHandler(handle_report_callback, pattern="^report_"))
     app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern="^del_"))
+    app.add_handler(CallbackQueryHandler(handle_restore_callback, pattern="^restore_"))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
