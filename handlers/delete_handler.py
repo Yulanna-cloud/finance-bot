@@ -85,14 +85,14 @@ def get_recent_sessions(n: int = 3) -> list:
             sessions[key]["rows"].append(actual_row)
             sessions[key]["count"] += 1
 
-            # Считаем только расходы
-            if op_type not in ("доход", "между счетами", "наличные"):
-                try:
-                    sessions[key]["expense_total"] += float(
-                        amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
-                    )
-                except (ValueError, TypeError):
-                    pass
+            # Считаем все суммы кроме переброски между счетами
+if op_type not in ("между счетами",):
+    try:
+        sessions[key]["expense_total"] += float(
+            amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
+        )
+    except (ValueError, TypeError):
+        pass
 
         last_keys = session_order[-n:]
         result = []
@@ -117,11 +117,14 @@ def format_session_button(s: dict) -> str:
     if len(what) > 25:
         what = what[:25] + "…"
 
+    total_str = f"{total:,.0f} ₽" if total > 0 else "0 ₽"
+
     if count == 1:
-        label = f"{source_label}: {what} — {total:,.0f} ₽ | {date_str}" if what else \
-                f"{source_label}: {total:,.0f} ₽ | {date_str}"
+        label = f"{source_label}: {what} — {total_str} | {date_str}" if what else \
+                f"{source_label}: {total_str} | {date_str}"
     else:
-        label = f"{source_label}: {count} позиций, {total:,.0f} ₽ расходов | {date_str}"
+        label = f"{source_label}: {what} — {total_str} | {date_str}" if what else \
+                f"{source_label}: {count} позиций, {total_str} | {date_str}"
 
     return label[:64]
 
