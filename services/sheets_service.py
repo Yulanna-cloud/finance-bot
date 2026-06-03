@@ -203,3 +203,14 @@ def smart_query(query_text: str) -> dict:
     except Exception as e:
         logger.error(f"Ошибка в smart_query: {e}")
         return {"ошибка": "Произошла ошибка при поиске."}
+
+def write_operation(row_data: list):
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
+        sheet.append_row(row_data)
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка записи в таблицу: {e}")
+        return False
