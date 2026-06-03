@@ -1,5 +1,6 @@
 """
 Обработчик команды /delete.
+Каждая позиция меню = один документ/ввод.
 """
 
 import logging
@@ -43,6 +44,7 @@ def get_recent_sessions(n: int = 3) -> list:
         i_recorded = find_col(["дата создания", "дата запис"], 26)
         i_date     = find_col(["дата"], 2)
         i_amount   = find_col(["сумма"], 7)
+        i_type     = find_col(["тип"], 6)
         i_cat      = find_col(["категори"], 9)
         i_desc     = find_col(["товар", "описани"], 13)
         i_shop     = find_col(["магазин"], 12)
@@ -57,10 +59,12 @@ def get_recent_sessions(n: int = 3) -> list:
             recorded = _get_cell(row, i_recorded)
             op_date  = _get_cell(row, i_date)
             amount   = _get_cell(row, i_amount)
+            op_type  = _get_cell(row, i_type).lower()
             cat      = _get_cell(row, i_cat)
             desc     = _get_cell(row, i_desc)
             shop     = _get_cell(row, i_shop)
 
+            # Ключ сессии: источник + время записи до минуты
             rec_minute = recorded[:16] if len(recorded) >= 16 else recorded
             key = f"{source}|{rec_minute}"
 
@@ -70,7 +74,7 @@ def get_recent_sessions(n: int = 3) -> list:
                     "source": source,
                     "recorded_at": recorded,
                     "op_date": op_date,
-                    "total": 0.0,
+                    "expense_total": 0.0,
                     "count": 0,
                     "first_cat": cat,
                     "first_desc": desc,
@@ -80,12 +84,15 @@ def get_recent_sessions(n: int = 3) -> list:
 
             sessions[key]["rows"].append(actual_row)
             sessions[key]["count"] += 1
-            try:
-                sessions[key]["total"] += float(
-                    amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
-                )
-            except (ValueError, TypeError):
-                pass
+
+            # Считаем только расходы
+            if op_type not in ("доход", "между счетами", "наличные"):
+                try:
+                    sessions[key]["expense_total"] += float(
+                        amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
+                    )
+                except (ValueError, TypeError):
+                    pass
 
         last_keys = session_order[-n:]
         result = []
@@ -103,7 +110,7 @@ def get_recent_sessions(n: int = 3) -> list:
 def format_session_button(s: dict) -> str:
     source_label = SOURCE_LABELS.get(s["source"], s["source"] or "Запись")
     date_str = s["op_date"] or (s["recorded_at"][:10] if s["recorded_at"] else "?")
-    total = s["total"]
+    total = s["expense_total"]
     count = s["count"]
 
     what = s["first_desc"] or s["first_shop"] or s["first_cat"] or ""
@@ -111,9 +118,10 @@ def format_session_button(s: dict) -> str:
         what = what[:25] + "…"
 
     if count == 1:
-        label = f"{source_label}: {what} — {total:,.0f} ₽ | {date_str}" if what else f"{source_label}: {total:,.0f} ₽ | {date_str}"
+        label = f"{source_label}: {what} — {total:,.0f} ₽ | {date_str}" if what else \
+                f"{source_label}: {total:,.0f} ₽ | {date_str}"
     else:
-        label = f"{source_label}: {count} записей, {total:,.0f} ₽ | {date_str}"
+        label = f"{source_label}: {count} позиций, {total:,.0f} ₽ расходов | {date_str}"
 
     return label[:64]
 
@@ -180,7 +188,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
         success = delete_rows(session["rows"])
 
         if success:
-            total_str = f" — {session['total']:,.0f} ₽" if session["total"] > 0 else ""
+            total_str = f" — {session['expense_total']:,.0f} ₽" if session["expense_total"] > 0 else ""
             await query.edit_message_text(
                 f"✅ Удалено {len(session['rows'])} записей\n"
                 f"*{SOURCE_LABELS.get(session['source'], session['source'])}*{total_str}",
