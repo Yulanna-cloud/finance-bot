@@ -65,7 +65,11 @@ def get_recent_sessions(n: int = 3) -> list:
             shop     = _get_cell(row, i_shop)
 
             # Ключ сессии: источник + время записи до минуты
-            rec_minute = recorded[:16] if len(recorded) >= 16 else recorded
+            # FIX 3: если recorded пустой — используем дату+номер строки как уникальный ключ
+            if recorded:
+                rec_minute = recorded[:16]
+            else:
+                rec_minute = f"row_{actual_row}"
             key = f"{source}|{rec_minute}"
 
             if key not in sessions:
@@ -85,12 +89,15 @@ def get_recent_sessions(n: int = 3) -> list:
             sessions[key]["rows"].append(actual_row)
             sessions[key]["count"] += 1
 
-          # Считаем все суммы кроме переброски между счетами
-        if op_type not in ("между счетами",):
-            try:
-                sessions[key]["expense_total"] += float(amount.replace(" ", "").replace("\xa0", "").replace(",", "."))
-            except (ValueError, TypeError):
-                pass
+            # FIX 2: этот блок должен быть внутри цикла (правильный отступ)
+            # Считаем все суммы кроме переброски между счетами
+            if op_type not in ("между счетами",):
+                try:
+                    sessions[key]["expense_total"] += float(
+                        amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
+                    )
+                except (ValueError, TypeError):
+                    pass
 
         last_keys = session_order[-n:]
         result = []
