@@ -449,7 +449,7 @@ def smart_query(query_text: str) -> dict:
             if key in raw_query:
                 target_month = val
                 break
-
+а
         # Определяем кого ищем из семьи
         target_person = None
         target_person_full = None
@@ -537,7 +537,7 @@ def smart_query(query_text: str) -> dict:
                         match = True
                     elif not is_income_search and not is_income_row:
                         match = True
-                    elif not is_income_search and not is_income_search:
+                    elif not is_income_search and not is_income_row:
                         # нет уточнения — показываем всё
                         match = True
 
