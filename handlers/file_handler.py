@@ -9,6 +9,7 @@ import os
 import re
 import json
 import pandas as pd
+from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 from services.gemini_service import parse_bank_statement
@@ -17,6 +18,7 @@ from services.sheets_service import write_operations_batch
 logger = logging.getLogger(__name__)
 
 MAX_OPERATIONS = 200
+UFA_TZ = timezone(timedelta(hours=5))
 
 SKIP_MERCHANTS = [
     "pyaterochka", "krasnoe", "beloe", "magnit", "lenta",
@@ -53,35 +55,14 @@ def family_category(name: str, op_type: str) -> str:
 
 
 def clean_shop_name(raw: str) -> str:
-    """Очищает название магазина из выписки Сбербанка.
-    '26.05.2026 190676 IP EFIMOVA STERLITAMAK RUS. Операция по карте ****0105'
-    -> 'Ip Efimova'
-    """
     s = raw.strip()
-    # Убираем дату и код авторизации в начале
     s = re.sub(r'^\d{2}\.\d{2}\.\d{4}\s+\d{4,8}\s+', '', s)
-    # Убираем всё начиная с ". Операция"
     s = re.sub(r'\.\s*Операция.*', '', s, flags=re.IGNORECASE)
-    # Убираем город и RUS в конце
-    s = re.sub(r'\s+(STERLITAMAK|MOSCOW|SPB|KAZAN|UFA|RUS).*', '', s, flags=re.IGNORECASE)
-    # Убираем если осталось слово Операция
+    s = re.sub(r'\s+(STERLITAMAK|MOSCOW|SPB|KAZAN|UFA|RUS).*', '', s, flags=re.IGNORECASE)
     s = re.sub(r'Операция.*', '', s, flags=re.IGNORECASE)
     return s.strip().title() or raw.strip()
 
 def parse_sber_pdf(pdf_bytes: bytes) -> list:
-    """
-    Парсер выписки Сбербанка.
-    
-    Формат блока в PDF (после извлечения текста):
-      Строка A: "28.05.2026 06:49 Прочие операции 500,00 88,59"
-                 дата  время  категория_сбера  СУММА  остаток
-      Строка B: "28.05.2026 398873 Яндекс. Операция по счету ****4953"
-                 дата_обработки  код  ОПИСАНИЕ
-    
-    Сумма — это ПЕРВОЕ число в конце строки A (перед остатком).
-    Остаток — ВТОРОЕ число в конце строки A (последнее).
-    Знак + перед суммой = доход, без знака = расход.
-    """
     try:
         import pypdf
         reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
@@ -99,19 +80,14 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
 
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
-    # Паттерн строки A: дата время категория ... сумма остаток
-    # Пример: "28.05.2026 06:49 Прочие операции 500,00 88,59"
-    # Пример с +: "27.05.2026 18:02 Перевод СБП +500,00 4 188,59"
     line_a_re = re.compile(
-        r'^(\d{2}\.\d{2}\.\d{4})\s+'   # дата операции
-        r'\d{2}:\d{2}\s+'               # время
-        r'(.+?)\s+'                     # категория сбера
-        r'([+\-]?[\d\s]+[,\.]\d{2})'   # сумма операции (может быть +/-)
-        r'\s+[\d\s]+[,\.]\d{2}$'       # остаток (последнее число — игнорируем)
+        r'^(\d{2}\.\d{2}\.\d{4})\s+'
+        r'\d{2}:\d{2}\s+'
+        r'(.+?)\s+'
+        r'([+\-]?[\d\s]+[,\.]\d{2})'
+        r'\s+[\d\s]+[,\.]\d{2}$'
     )
 
-    # Паттерн строки B: дата_обработки код_авторизации описание
-    # Пример: "28.05.2026 398873 Яндекс. Операция по счету ****4953"
     line_b_re = re.compile(
         r'^\d{2}\.\d{2}\.\d{4}\s+\d{4,8}\s+(.+)$'
     )
@@ -124,11 +100,10 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             i += 1
             continue
 
-        date_str  = m_a.group(1)
-        sber_cat  = m_a.group(2).strip()
+        date_str   = m_a.group(1)
+        sber_cat   = m_a.group(2).strip()
         amount_raw = m_a.group(3).strip()
 
-        # Описание — следующая строка (строка B)
         desc = ""
         if i + 1 < len(lines):
             m_b = line_b_re.match(lines[i + 1])
@@ -140,7 +115,6 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
         else:
             i += 1
 
-        # Знак и сумма
         is_income = amount_raw.startswith("+")
         clean_amount = re.sub(r'[+\-\s]', '', amount_raw).replace(',', '.')
         try:
@@ -153,12 +127,11 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
         desc_lower = desc.lower()
         op_type = "доход" if is_income else "расход"
 
-        recv = ""      # получатель (семья)
-        shop = ""      # магазин / отправитель
-        sender = ""    # отправитель (для доходов)
+        recv = ""
+        shop = ""
+        sender = ""
         category = ""
 
-        # ── 1. Переброски между своими счетами ────────────────────────────
         if any(m in desc_lower for m in ["vklad-karta", "karta-vklad", "sberbank onl@in"]):
             operations.append({
                 "дата": date_str, "сумма": amount,
@@ -168,16 +141,13 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             })
             continue
 
-        # ── 2. Пропускаем "Без идентификации" ─────────────────────────────
         if "без идентификации" in desc_lower:
             continue
 
-        # ── 3. Продуктовые супермаркеты — пропускаем ──────────────────────
         if any(s in desc_lower for s in SKIP_MERCHANTS):
             logger.info(f"Пропускаем супермаркет: {desc}")
             continue
 
-        # ── 4. Наличные (банкомат) ─────────────────────────────────────────
         if "atm" in desc_lower or "выдача наличных" in sber_cat.lower():
             clean_desc = re.sub(
                 r'\s*(STERLITAMAK|MOSCOW|SPB|RUS)\b.*', '', desc, flags=re.IGNORECASE
@@ -190,7 +160,6 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             })
             continue
 
-        # ── 5. Яндекс ──────────────────────────────────────────────────────
         if "яндекс" in desc_lower:
             if is_income:
                 sender   = "Алексей П."
@@ -208,15 +177,10 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             })
             continue
 
-        # ── 6. Переводы людям ──────────────────────────────────────────────
-        # Паттерны Сбера:
-        #   "Перевод для П. Маргарита Алексеевна. Операция..."
-        #   "Перевод от Ш. Диана Александровна. Операция..."
-        #   "Перевод от П. Алексей Георгиевич. Операция..."
         transfer_re = re.compile(
             r'перевод\s+(?:для|от)\s+'
-            r'(?:[А-ЯЁа-яё]\.\s+)?'           # необязательная первая буква фамилии
-            r'([А-ЯЁа-яё][а-яё]+(?:\s+[А-ЯЁа-яё][а-яё]+)*)',  # имя [отчество]
+            r'(?:[А-ЯЁа-яё]\.\s+)?'
+            r'([А-ЯЁа-яё][а-яё]+(?:\s+[А-ЯЁа-яё][а-яё]+)*)',
             re.IGNORECASE
         )
         tr_match = transfer_re.search(desc)
@@ -227,17 +191,14 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
 
             if family:
                 if is_income:
-                    # Деньги пришли от члена семьи
                     sender   = family
                     category = family_category(family, "доход")
                     op_type  = "доход"
                 else:
-                    # Перевели члену семьи
                     recv     = family
                     category = family_category(family, "расход")
                     op_type  = "расход"
             else:
-                # Не семья — частник/ИП
                 if raw_name:
                     parts = raw_name.split()
                     short = f"{parts[0]} {parts[1][0]}." if len(parts) >= 2 else raw_name
@@ -260,7 +221,6 @@ def parse_sber_pdf(pdf_bytes: bytes) -> list:
             })
             continue
 
-        # ── 7. Магазины и кафе ─────────────────────────────────────────────
         clean_desc = clean_shop_name(desc)
 
         sber_cat_lower = sber_cat.lower()
@@ -355,7 +315,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("\n".join(preview_lines), parse_mode="Markdown")
 
-        ok, errors = write_operations_batch(operations, source="выписка_сбер")
+        # Уникальный source для всей выписки — чтобы /delete видел её как одну сессию
+        batch_ts = datetime.now(tz=UFA_TZ).strftime("%Y%m%d_%H%M")
+        batch_source = f"выписка_сбер_{batch_ts}"
+
+        ok, errors = write_operations_batch(operations, source=batch_source)
 
         msg = (
             f"✅ Выписка обработана!\n\n"
