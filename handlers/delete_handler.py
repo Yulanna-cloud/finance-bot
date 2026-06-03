@@ -22,32 +22,38 @@ SOURCE_LABELS = {
     "чек_qr":         "📷 QR-чек",
 }
 
+def get_source_label(source: str) -> str:
+    """Возвращает метку для source, включая выписки с timestamp."""
+    if source.startswith("выписка_сбер"):
+        return "📄 Выписка"
+    return SOURCE_LABELS.get(source, source or "Запись")
 
 def normalize_date(val: str) -> str:
     """Приводит дату любого формата к DD.MM.YYYY"""
     if not val:
         return ""
-    # Уже нормальный формат
-    if len(val) == 10 and val[2] == "." and val[5] == ".":
-        return val
-    # datetime из Excel: "2026-06-01 00:00:00"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(val[:10], fmt[:8] if "H" not in fmt else fmt).strftime("%d.%m.%Y")
-        except ValueError:
-            pass
+    if len(val) >= 10 and val[2] == "." and val[5] == ".":
+        return val[:10]
     try:
         return datetime.strptime(val[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
     except ValueError:
         return val[:10]
 
-
 def normalize_time(val: str) -> str:
     """Приводит время к HH:MM"""
     if not val:
         return ""
-    # "19:52:00" → "19:52"
     return val[:5]
+
+def get_session_key(source: str, op_date: str, op_time: str, op_type: str) -> str:
+    """
+    Ключ сессии:
+    - Выписка: группируем всё по source (содержит timestamp загрузки)
+    - Остальные: источник + дата + время + тип
+    """
+    if source.startswith("выписка_сбер"):
+        return source  # весь батч = одна сессия
+    return f"{source}|{op_date}|{op_time}|{op_type}"
 
 
 def get_recent_sessions(n: int = 3) -> list:
@@ -92,9 +98,7 @@ def get_recent_sessions(n: int = 3) -> list:
             desc     = _get_cell(row, i_desc)
             shop     = _get_cell(row, i_shop)
 
-            # Ключ сессии: источник + дата + время до минуты + тип операции
-            # Разделяет расход и доход даже если введены в одну минуту
-            key = f"{source}|{op_date}|{op_time}|{op_type}"
+            key = get_session_key(source, op_date, op_time, op_type)
 
             if key not in sessions:
                 sessions[key] = {
@@ -112,8 +116,7 @@ def get_recent_sessions(n: int = 3) -> list:
             sessions[key]["rows"].append(actual_row)
             sessions[key]["count"] += 1
 
-            # Считаем суммы (кроме переброски между счетами)
-            if op_type not in ("между счетами",):
+            if op_type not in ("между счетами", "наличные"):
                 try:
                     amt = float(
                         amount.replace(" ", "").replace("\xa0", "").replace(",", ".")
@@ -136,14 +139,14 @@ def get_recent_sessions(n: int = 3) -> list:
 
 
 def format_session_button(s: dict) -> str:
-    source_label = SOURCE_LABELS.get(s["source"], s["source"] or "Запись")
+    source_label = get_source_label(s["source"])
     date_str = s["op_date"] or "?"
     total = s["expense_total"]
     count = s["count"]
 
     what = s["first_desc"] or s["first_shop"] or s["first_cat"] or ""
-    if len(what) > 25:
-        what = what[:25] + "…"
+    if len(what) > 20:
+        what = what[:20] + "…"
 
     total_str = f"{total:,.0f} ₽" if total > 0 else "0 ₽"
 
@@ -151,8 +154,8 @@ def format_session_button(s: dict) -> str:
         label = f"{source_label}: {what} — {total_str} | {date_str}" if what else \
                 f"{source_label}: {total_str} | {date_str}"
     else:
-        label = f"{source_label}: {what} — {total_str} | {date_str}" if what else \
-                f"{source_label}: {count} позиций, {total_str} | {date_str}"
+        label = f"{source_label}: {count} записей, {total_str} | {date_str}" if not what else \
+                f"{source_label}: {what}… {count} зап., {total_str} | {date_str}"
 
     return label[:64]
 
@@ -216,13 +219,15 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
             return
 
         session = sessions[idx]
+        count = len(session["rows"])
         success = delete_rows(session["rows"])
 
         if success:
+            source_label = get_source_label(session["source"])
             total_str = f" — {session['expense_total']:,.0f} ₽" if session["expense_total"] > 0 else ""
             await query.edit_message_text(
-                f"✅ Удалено {len(session['rows'])} записей\n"
-                f"*{SOURCE_LABELS.get(session['source'], session['source'])}*{total_str}",
+                f"✅ Удалено {count} записей\n"
+                f"*{source_label}*{total_str}",
                 parse_mode="Markdown"
             )
         else:
