@@ -214,3 +214,14 @@ def write_operation(row_data: list):
     except Exception as e:
         logger.error(f"Ошибка записи в таблицу: {e}")
         return False
+
+def write_operations_batch(rows_data: list):
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
+        sheet.append_rows(rows_data)
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка пакетной записи в таблицу: {e}")
+        return False
