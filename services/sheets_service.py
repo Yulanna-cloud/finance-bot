@@ -43,6 +43,18 @@ MONTH_NAMES_RU = {
     9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
 }
 
+# Имена семьи для поиска
+FAMILY_SEARCH = {
+    "маргарит": "Маргарита П.",
+    "диан":     "Диана Ш.",
+    "алекс":    "Алексей П.",
+    "алёш":     "Алексей П.",
+    "райс":     "Райса Г.",
+    "салават":  "Салават Г.",
+    "дамир":    "Дамир Г.",
+    "ольг":     "Ольга Г.",
+}
+
 
 def now_ufa() -> datetime:
     return datetime.now(tz=UFA_TZ)
@@ -235,12 +247,12 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                         return i
             return default
 
-        ic_date  = find_col_index(["дата"],                 2)
-        ic_month = find_col_index(["месяц"],                4)
-        ic_year  = find_col_index(["год"],                  5)
-        ic_type  = find_col_index(["тип операции", "тип"],  6)
-        ic_sum   = find_col_index(["сумма"],                7)
-        ic_cat   = find_col_index(["категория"],            9)
+        ic_date  = find_col_index(["дата"],                2)
+        ic_month = find_col_index(["месяц"],               4)
+        ic_year  = find_col_index(["год"],                 5)
+        ic_type  = find_col_index(["тип операции", "тип"], 6)
+        ic_sum   = find_col_index(["сумма"],               7)
+        ic_cat   = find_col_index(["категория"],           9)
 
         for raw_row in all_values[1:]:
             row_date  = _get_cell(raw_row, ic_date)
@@ -275,7 +287,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
 
             if amount <= 0:
                 continue
-
             if row_type in ("наличные", "между счетами"):
                 continue
 
@@ -407,39 +418,65 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
 
 
 def smart_query(query_text: str) -> dict:
+    """
+    Отвечает на вопросы типа:
+    - сколько потрачено на Маргариту
+    - сколько пришло от Алексея
+    - расходы на обучение в июне
+    """
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         ops_sheet = spreadsheet.worksheet("ОПЕРАЦИИ")
-
-        try:
-            ops_rows = ops_sheet.get_values()
-        except Exception as e:
-            return {"ошибка": "Google Таблицы временно недоступны."}
+        ops_rows = ops_sheet.get_values()
 
         if not ops_rows or len(ops_rows) <= 1:
             return {"ответ": "В таблице пока нет операций."}
 
         raw_query = query_text.lower()
+        for char in [".", ",", "?", "!", "-", "/"]:
+            raw_query = raw_query.replace(char, " ")
 
+        # Определяем месяц из запроса
         months_query = {
             "январ": "январь", "феврал": "февраль", "март": "март",
             "апрел": "апрель", "мае": "май", "май": "май", "июн": "июнь",
             "июл": "июль", "август": "август", "сентябр": "сентябрь",
             "октябр": "октябрь", "ноябр": "ноябрь", "декабр": "декабрь"
         }
-
         target_month = None
         for key, val in months_query.items():
             if key in raw_query:
                 target_month = val
                 break
 
-        for char in [".", ",", "?", "!", "-", "/"]:
-            raw_query = raw_query.replace(char, " ")
+        # Определяем кого ищем из семьи
+        target_person = None
+        target_person_full = None
+        for key, full_name in FAMILY_SEARCH.items():
+            if key in raw_query:
+                target_person = key
+                target_person_full = full_name
+                break
 
-        is_aleksey_search = "алекс" in raw_query
+        # Определяем тип поиска
+        income_words = ["пришло", "приход", "перевел", "перевела", "получил", "получила", "от "]
+        is_income_search = any(w in raw_query for w in income_words)
 
+        # Определяем категорию из запроса
+        cat_search = None
+        cat_map = {
+            "обучени": "Обучение", "танц": "Обучение", "продукт": "Продукты",
+            "кафе": "Кафе", "транспорт": "Транспорт", "одежд": "Одежда",
+            "медицин": "Медицина", "аптек": "Медицина", "животн": "Животные",
+            "красот": "Красота", "подписк": "Подписки",
+        }
+        for key, cat in cat_map.items():
+            if key in raw_query:
+                cat_search = cat
+                break
+
+        # Находим индексы колонок
         ops_headers = [h.strip().lower() for h in ops_rows[0]]
 
         def find_col(keywords, default):
@@ -453,6 +490,7 @@ def smart_query(query_text: str) -> dict:
         idx_type   = find_col(["тип"],              6)
         idx_amount = find_col(["сумма"],            7)
         idx_cat    = find_col(["категори"],         9)
+        idx_subcat = find_col(["подкатегори"],      11)
         idx_shop   = find_col(["магазин"],          12)
         idx_desc   = find_col(["товар", "описани"], 13)
         idx_recv   = find_col(["получател"],        14)
@@ -462,50 +500,83 @@ def smart_query(query_text: str) -> dict:
         total_amount = 0.0
 
         for row in ops_rows[1:]:
-            while len(row) <= max(idx_cat, idx_desc, idx_amount, idx_recv, idx_shop, idx_sender):
+            # Дополняем строку до нужной длины
+            max_idx = max(idx_cat, idx_subcat, idx_desc, idx_amount,
+                         idx_recv, idx_shop, idx_sender)
+            while len(row) <= max_idx:
                 row.append("")
 
-            cat_val    = row[idx_cat].lower()
-            desc_val   = row[idx_desc].lower()
-            recv_val   = row[idx_recv].lower()
-            shop_val   = row[idx_shop].lower()
-            sender_val = row[idx_sender].lower()
-            t_val      = row[idx_type].lower()
             row_month  = row[idx_month].strip()
+            row_type   = row[idx_type].lower()
+            row_cat    = row[idx_cat]
+            row_subcat = row[idx_subcat]
+            row_desc   = row[idx_desc]
+            row_recv   = row[idx_recv]
+            row_shop   = row[idx_shop]
+            row_sender = row[idx_sender]
+            date       = row[idx_date]
+            amount_str = row[idx_amount]
 
-            is_income_row = "доход" in t_val or "доход" in cat_val
-
+            # Фильтр по месяцу
             if target_month and not month_matches(row_month, target_month):
                 continue
 
-            text_to_search = f"{cat_val} {desc_val} {recv_val} {shop_val} {sender_val}"
+            # Всё что есть в строке для поиска
+            all_text = " ".join([
+                row_cat, row_subcat, row_desc, row_recv, row_shop, row_sender
+            ]).lower()
 
-            match_found = False
-            if is_aleksey_search and "алекс" in text_to_search and is_income_row:
-                match_found = True
+            match = False
 
-            if match_found:
-                date       = row[idx_date]
-                amount_str = row[idx_amount]
-                try:
-                    amount_num = float(str(amount_str).replace(" ", "").replace(",", "."))
-                    total_amount += amount_num
-                except ValueError:
-                    pass
-                d_text = row[idx_sender] or row[idx_recv] or row[idx_desc] or row[idx_shop]
-                found_lines.append(f"📅 {date} | 💰 {amount_str} ₽ | _{d_text}_")
+            # Поиск по имени человека
+            if target_person:
+                if target_person in all_text:
+                    # Уточняем: доход или расход
+                    is_income_row = "доход" in row_type
+                    if is_income_search and is_income_row:
+                        match = True
+                    elif not is_income_search and not is_income_row:
+                        match = True
+                    elif not is_income_search and not is_income_search:
+                        # нет уточнения — показываем всё
+                        match = True
+
+            # Поиск по категории (без имени человека)
+            elif cat_search:
+                if cat_search.lower() in row_cat.lower():
+                    match = True
+
+            if not match:
+                continue
+
+            try:
+                amount_num = float(
+                    str(amount_str).replace(" ", "").replace("\xa0", "").replace(",", ".")
+                )
+                total_amount += amount_num
+            except ValueError:
+                pass
+
+            label = row_recv or row_sender or row_desc or row_shop or row_cat
+            found_lines.append(f"📅 {date} | 💰 {amount_str} ₽ | _{label}_")
 
         if not found_lines:
-            month_print = f" за {target_month}" if target_month else ""
-            return {"ответ": f"Ничего не нашлось по запросу «{query_text}»{month_print}"}
+            month_str = f" за {target_month}" if target_month else ""
+            person_str = f" по {target_person_full}" if target_person_full else ""
+            cat_str = f" категория {cat_search}" if cat_search else ""
+            return {"ответ": f"Ничего не нашлось{person_str}{cat_str}{month_str}"}
 
-        month_str = f" за {target_month.title()}" if target_month else ""
+        month_label = f" за {target_month.title()}" if target_month else ""
+        person_label = f" {target_person_full}" if target_person_full else ""
+        cat_label = f" {cat_search}" if cat_search else ""
+
         lines = [
-            f"🔍 Результаты{month_str}:",
-            f"📊 Всего пришло от Алексея: *{total_amount:,.2f} ₽*",
-            "\n📋 Найденные записи (последние 5):"
+            f"🔍 Результаты{person_label}{cat_label}{month_label}:",
+            f"💰 Итого: *{total_amount:,.0f} ₽*",
+            "\n📋 Записи (последние 10):"
         ]
-        lines.extend(found_lines[-5:])
+        lines.extend(found_lines[-10:])
+
         return {"ответ": "\n".join(lines)}
 
     except Exception as e:
