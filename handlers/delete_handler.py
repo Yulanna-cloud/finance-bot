@@ -40,14 +40,14 @@ def get_recent_sessions(n: int = 3) -> list:
                     return i
             return default
 
-        i_source   = find_col(["источник"], 17)
-        i_recorded = find_col(["дата создания", "дата запис"], 26)
-        i_date     = find_col(["дата"], 2)
-        i_amount   = find_col(["сумма"], 7)
-        i_type     = find_col(["тип"], 6)
-        i_cat      = find_col(["категори"], 9)
-        i_desc     = find_col(["товар", "описани"], 13)
-        i_shop     = find_col(["магазин"], 12)
+        i_source = find_col(["источник"], 17)
+        i_date   = find_col(["дата"], 2)
+        i_time   = find_col(["время"], 3)
+        i_amount = find_col(["сумма"], 7)
+        i_type   = find_col(["тип"], 6)
+        i_cat    = find_col(["категори"], 9)
+        i_desc   = find_col(["товар", "описани"], 13)
+        i_shop   = find_col(["магазин"], 12)
 
         sessions = {}
         session_order = []
@@ -56,27 +56,24 @@ def get_recent_sessions(n: int = 3) -> list:
             actual_row = row_idx + 2
 
             source   = _get_cell(row, i_source)
-            recorded = _get_cell(row, i_recorded)
             op_date  = _get_cell(row, i_date)
+            op_time  = _get_cell(row, i_time)
             amount   = _get_cell(row, i_amount)
             op_type  = _get_cell(row, i_type).lower()
             cat      = _get_cell(row, i_cat)
             desc     = _get_cell(row, i_desc)
             shop     = _get_cell(row, i_shop)
 
-            # Ключ сессии: источник + время записи до минуты
-            # FIX 3: если recorded пустой — используем дату+номер строки как уникальный ключ
-            if recorded:
-                rec_minute = recorded[:16]
-            else:
-                rec_minute = f"row_{actual_row}"
-            key = f"{source}|{rec_minute}"
+            # Ключ сессии: источник + дата + время до минуты + тип операции
+            # Это надёжно разделяет расход и доход даже если введены в одну минуту
+            time_minute = op_time[:5] if len(op_time) >= 5 else op_time
+            key = f"{source}|{op_date}|{time_minute}|{op_type}"
 
             if key not in sessions:
                 sessions[key] = {
                     "rows": [],
                     "source": source,
-                    "recorded_at": recorded,
+                    "recorded_at": f"{op_date} {op_time}",
                     "op_date": op_date,
                     "expense_total": 0.0,
                     "count": 0,
@@ -89,8 +86,7 @@ def get_recent_sessions(n: int = 3) -> list:
             sessions[key]["rows"].append(actual_row)
             sessions[key]["count"] += 1
 
-            # FIX 2: этот блок должен быть внутри цикла (правильный отступ)
-            # Считаем все суммы кроме переброски между счетами
+            # Считаем суммы (кроме переброски между счетами)
             if op_type not in ("между счетами",):
                 try:
                     sessions[key]["expense_total"] += float(
@@ -114,7 +110,7 @@ def get_recent_sessions(n: int = 3) -> list:
 
 def format_session_button(s: dict) -> str:
     source_label = SOURCE_LABELS.get(s["source"], s["source"] or "Запись")
-    date_str = s["op_date"] or (s["recorded_at"][:10] if s["recorded_at"] else "?")
+    date_str = s["op_date"] or "?"
     total = s["expense_total"]
     count = s["count"]
 
