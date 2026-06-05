@@ -145,15 +145,35 @@ def check_data_to_operations(check: dict, instruction: dict | None = None) -> tu
     return operations, store, total
 
 
-def read_receipt_with_groq(image_bytes: bytes) -> list | None:
+# ====== ИСПРАВЛЕНО: промпт теперь читает магазин, позиции возвращаются с магазином ======
+def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
+    """
+    Читает чек через Groq Vision.
+    Возвращает словарь: {"магазин": "...", "позиции": [...]}
+    """
     if not groq_client:
         return None
     try:
         import base64
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        prompt = """Прочитай чек. Верни ТОЛЬКО JSON массив без markdown.
-Каждый элемент: {"описание":"название товара","сумма":число,"категория":"категория"}
-Категории: Продукты, Животные, Бытовая химия, Красота, Табак, Алкоголь, Прочее
+
+        prompt = """Прочитай чек и верни ТОЛЬКО JSON без markdown.
+
+КРИТИЧЕСКИ ВАЖНО для поля "магазин":
+- Используй ТОРГОВОЕ название (логотип/бренд вверху чека), НЕ юридическое название
+- Юридическое название (ООО, АО, ЗАО, ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ) в поле "магазин" ЗАПРЕЩЕНО
+- Логотип всегда крупно вверху чека — это и есть правильное название
+- Примеры правильных названий: Пятёрочка, Магнит, Лента, Перекрёсток, Дикси, ВкусВилл, Светофор
+- Соответствие: ООО АГРОТОРГ / ООО ВЫРУЧАЙ → Пятёрочка, ООО ТАНДЕР → Магнит, ООО ДИКСИ → Дикси
+
+{
+  "магазин": "торговое название магазина",
+  "позиции": [
+    {"описание": "название товара", "сумма": цена_числом, "категория": "категория"},
+    {"описание": "название товара", "сумма": цена_числом, "категория": "категория"}
+  ]
+}
+Категории для позиций: Продукты, Животные, Бытовая химия, Красота, Табак, Алкоголь, Прочее
 Не включай итого, скидки, бонусы — только отдельные товары с ценами."""
 
         response = groq_client.chat.completions.create(
@@ -166,14 +186,25 @@ def read_receipt_with_groq(image_bytes: bytes) -> list | None:
                 ]
             }]
         )
-        raw = response.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
-        items = json.loads(raw)
-        if isinstance(items, list):
-            return items
+        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
+        result = json.loads(raw)
+
+        # Если модель вернула список (старый формат) — оборачиваем
+        if isinstance(result, list):
+            return {"магазин": "", "позиции": result}
+
+        # Нормальный новый формат
+        if isinstance(result, dict):
+            return {
+                "магазин": result.get("магазин", ""),
+                "позиции": result.get("позиции", [])
+            }
+
         return None
     except Exception as e:
         logger.error(f"Ошибка Groq Vision: {e}")
         return None
+# ======================================================================================
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,9 +267,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply_receipt_result(update, operations, "", instruction["сумма"], ok, instruction)
             return
 
-        items = read_receipt_with_groq(image_bytes)
+        # ====== ИСПРАВЛЕНО: берём магазин из результата Groq ======
+        receipt_data = read_receipt_with_groq(image_bytes)
 
-        if not items:
+        if not receipt_data or not receipt_data.get("позиции"):
             # Если ничего не прочитал, но есть подпись — просим сумму
             if instruction:
                 await update.message.reply_text(
@@ -253,6 +285,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Попробуй сфотографировать QR-код или запиши голосом/текстом."
                 )
             return
+
+        items = receipt_data.get("позиции", [])
+        store_from_groq = receipt_data.get("магазин", "")
+        # ===========================================================
 
         operations = []
         for item in items:
@@ -269,11 +305,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 subcat = instruction.get("подкатегория", "")
                 recv = instruction.get("получатель", "")
                 desc = instruction.get("описание") or item.get("описание", "")
+                # Магазин из подписи или из Groq
+                store = instruction.get("магазин", "") or store_from_groq
             else:
                 cat = item.get("категория", "Продукты")
                 subcat = ""
                 recv = ""
                 desc = item.get("описание", "")
+                # ====== ИСПРАВЛЕНО: магазин берётся из Groq, не пустая строка ======
+                store = store_from_groq
+                # ===================================================================
 
             operations.append({
                 "дата": "",
@@ -281,7 +322,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "тип": "расход",
                 "категория": cat,
                 "подкатегория": subcat,
-                "магазин": "",
+                "магазин": store,
                 "описание": desc,
                 "получатель": recv,
                 "отправитель": "",
@@ -294,7 +335,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         total = sum(op["сумма"] for op in operations)
         ok, errors = write_operations_batch(operations, source="чек_фото")
-        await _reply_receipt_result(update, operations, "", total, ok, instruction)
+        await _reply_receipt_result(update, operations, store_from_groq, total, ok, instruction)
 
     except Exception as e:
         logger.error(f"Ошибка handle_photo: {e}", exc_info=True)
