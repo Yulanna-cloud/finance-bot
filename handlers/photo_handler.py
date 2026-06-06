@@ -29,6 +29,61 @@ CATEGORY_KEYWORDS = {
     "Кафе":          ["кофе", "латте", "капучино", "чай пакет"],
 }
 
+# ====== Таблица нормализации названия магазина ======
+# Ключи — фрагменты которые могут встретиться в юрлице или названии
+# Значения — правильное торговое название
+STORE_NAME_MAP = [
+    (["агроторг", "пятерочка", "пятёрочка", "pyaterochka", "5ка", "5-ка"], "Пятёрочка"),
+    (["тандер", "магнит", "magnit"], "Магнит"),
+    (["дикси", "dixi"], "Дикси"),
+    (["перекресток", "перекрёсток", "perekrestok"], "Перекрёсток"),
+    (["лента", "lenta"], "Лента"),
+    (["вкусвилл", "вкус вилл", "vkusvill"], "ВкусВилл"),
+    (["окей", "o'key", "okey"], "О'Кей"),
+    (["светофор"], "Светофор"),
+    (["монеточка", "monetochka"], "Монеточка"),
+    (["самокат", "samokat"], "Самокат"),
+    (["метро", "metro cash"], "Метро"),
+    (["ашан", "auchan"], "Ашан"),
+    (["глобус"], "Глобус"),
+    (["спар", "spar"], "Спар"),
+    (["fix price", "фикс прайс", "фикспрайс"], "Fix Price"),
+    (["красное белое", "красное & белое"], "Красное&Белое"),
+    (["бристоль"], "Бристоль"),
+    (["пятёрочка экспресс", "пятерочка экспресс"], "Пятёрочка"),
+]
+
+def normalize_store_name(raw_name: str) -> str:
+    """
+    Принимает любое название магазина (юрлицо или торговое),
+    возвращает нормальное торговое название.
+    Если не распознано — убирает ООО/АО/ЗАО и возвращает очищенное.
+    """
+    if not raw_name:
+        return ""
+
+    name_lower = raw_name.lower().strip()
+
+    # Убираем мусор: ООО, АО, ЗАО, кавычки, лишние пробелы
+    cleaned = re.sub(
+        r'\b(ооо|оао|зао|пао|ао|общество с ограниченной ответственностью|'
+        r'акционерное общество|публичное акционерное общество)\b',
+        '', name_lower
+    )
+    cleaned = re.sub(r'["""«»\']+', '', cleaned).strip()
+
+    # Ищем совпадение в таблице
+    for keywords, trade_name in STORE_NAME_MAP:
+        for kw in keywords:
+            if kw in name_lower or kw in cleaned:
+                return trade_name
+
+    # Если не нашли — возвращаем очищенное название с заглавной буквы
+    result = cleaned.strip().title()
+    return result if result else raw_name
+# ====================================================
+
+
 def classify_item(name: str) -> str:
     name_lower = name.lower()
     for category, keywords in CATEGORY_KEYWORDS.items():
@@ -91,8 +146,9 @@ def check_data_to_operations(check: dict, instruction: dict | None = None) -> tu
     Если передан instruction — применяет категорию/получателя из подписи.
     """
     items = check.get("items", [])
-    store = (check.get("user", "") or check.get("retailPlaceName", "") or "")
-    store = re.sub(r'"', '', store).strip()[:40]
+    store_raw = (check.get("user", "") or check.get("retailPlaceName", "") or "")
+    store_raw = re.sub(r'"', '', store_raw).strip()[:40]
+    store = normalize_store_name(store_raw)  # нормализуем
 
     date_raw = str(check.get("dateTime", "") or check.get("localDateTime", ""))
     op_date = ""
@@ -103,7 +159,6 @@ def check_data_to_operations(check: dict, instruction: dict | None = None) -> tu
 
     total = float(check.get("totalSum", 0)) / 100
 
-    # Если есть инструкция из подписи — одна операция на всю сумму
     if instruction and instruction.get("использовать_подпись"):
         operations = [{
             "дата": op_date,
@@ -119,7 +174,6 @@ def check_data_to_operations(check: dict, instruction: dict | None = None) -> tu
         }]
         return operations, store, total
 
-    # Иначе — разбиваем по позициям
     operations = []
     for item in items:
         name = str(item.get("name", "Товар"))
@@ -145,11 +199,11 @@ def check_data_to_operations(check: dict, instruction: dict | None = None) -> tu
     return operations, store, total
 
 
-# ====== ИСПРАВЛЕНО: промпт теперь читает магазин, позиции возвращаются с магазином ======
 def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
     """
     Читает чек через Groq Vision.
     Возвращает словарь: {"магазин": "...", "позиции": [...]}
+    Магазин дополнительно нормализуется через normalize_store_name.
     """
     if not groq_client:
         return None
@@ -159,15 +213,11 @@ def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
 
         prompt = """Прочитай чек и верни ТОЛЬКО JSON без markdown.
 
-КРИТИЧЕСКИ ВАЖНО для поля "магазин":
-- Используй ТОРГОВОЕ название (логотип/бренд вверху чека), НЕ юридическое название
-- Юридическое название (ООО, АО, ЗАО, ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ) в поле "магазин" ЗАПРЕЩЕНО
-- Логотип всегда крупно вверху чека — это и есть правильное название
-- Примеры правильных названий: Пятёрочка, Магнит, Лента, Перекрёсток, Дикси, ВкусВилл, Светофор
-- Соответствие: ООО АГРОТОРГ / ООО ВЫРУЧАЙ → Пятёрочка, ООО ТАНДЕР → Магнит, ООО ДИКСИ → Дикси
+Найди торговое название магазина (логотип крупно вверху чека).
+Прочитай все позиции товаров с ценами.
 
 {
-  "магазин": "торговое название магазина",
+  "магазин": "название магазина как написано на логотипе вверху чека",
   "позиции": [
     {"описание": "название товара", "сумма": цена_числом, "категория": "категория"},
     {"описание": "название товара", "сумма": цена_числом, "категория": "категория"}
@@ -193,10 +243,13 @@ def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
         if isinstance(result, list):
             return {"магазин": "", "позиции": result}
 
-        # Нормальный новый формат
         if isinstance(result, dict):
+            raw_store = result.get("магазин", "")
+            # Нормализуем название магазина в коде — независимо от того, что вернула модель
+            normalized_store = normalize_store_name(raw_store)
+            logger.info(f"Магазин из модели: '{raw_store}' → нормализовано: '{normalized_store}'")
             return {
-                "магазин": result.get("магазин", ""),
+                "магазин": normalized_store,
                 "позиции": result.get("позиции", [])
             }
 
@@ -204,11 +257,9 @@ def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
     except Exception as e:
         logger.error(f"Ошибка Groq Vision: {e}")
         return None
-# ======================================================================================
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Подпись к фото (caption)
     caption = (update.message.caption or "").strip()
     instruction = None
     if caption:
@@ -249,7 +300,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Шаг 2: Groq Vision
         await update.message.reply_text("🔍 Читаю чек по фото...")
 
-        # Если есть подпись с суммой — используем её напрямую
         if instruction and instruction.get("сумма"):
             operations = [{
                 "дата": "",
@@ -267,11 +317,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply_receipt_result(update, operations, "", instruction["сумма"], ok, instruction)
             return
 
-        # ====== ИСПРАВЛЕНО: берём магазин из результата Groq ======
         receipt_data = read_receipt_with_groq(image_bytes)
 
         if not receipt_data or not receipt_data.get("позиции"):
-            # Если ничего не прочитал, но есть подпись — просим сумму
             if instruction:
                 await update.message.reply_text(
                     "😔 Не смогла прочитать чек.\n"
@@ -288,7 +336,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         items = receipt_data.get("позиции", [])
         store_from_groq = receipt_data.get("магазин", "")
-        # ===========================================================
 
         operations = []
         for item in items:
@@ -299,22 +346,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if amount <= 0:
                 continue
 
-            # Если есть инструкция — применяем категорию из подписи
             if instruction and instruction.get("использовать_подпись"):
                 cat = instruction.get("категория", "Прочее")
                 subcat = instruction.get("подкатегория", "")
                 recv = instruction.get("получатель", "")
                 desc = instruction.get("описание") or item.get("описание", "")
-                # Магазин из подписи или из Groq
                 store = instruction.get("магазин", "") or store_from_groq
             else:
                 cat = item.get("категория", "Продукты")
                 subcat = ""
                 recv = ""
                 desc = item.get("описание", "")
-                # ====== ИСПРАВЛЕНО: магазин берётся из Groq, не пустая строка ======
                 store = store_from_groq
-                # ===================================================================
 
             operations.append({
                 "дата": "",
