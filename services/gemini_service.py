@@ -70,7 +70,7 @@ GROCERY_STORES = [
     "самокат", "яндекс лавка", "spar", "fix price", "дикси", "окей"
 ]
 
-# Таблица нормализации названия магазина: юрлицо → торговое название
+# Таблица нормализации: юрлицо/любое название → торговое
 STORE_NAME_MAP = [
     (["агроторг", "пятерочка", "пятёрочка", "pyaterochka", "5ка", "5-ка"], "Пятёрочка"),
     (["тандер", "магнит", "magnit"], "Магнит"),
@@ -93,32 +93,24 @@ STORE_NAME_MAP = [
 
 
 def normalize_store_name(raw_name: str) -> str:
-    """
-    Принимает любое название магазина (юрлицо или торговое),
-    возвращает нормальное торговое название.
-    """
     if not raw_name:
         return ""
     name_lower = raw_name.lower().strip()
-    # Убираем юридические формы
     cleaned = re.sub(
         r'\b(ооо|оао|зао|пао|ао|общество с ограниченной ответственностью|'
         r'акционерное общество|публичное акционерное общество)\b',
         '', name_lower
     )
     cleaned = re.sub(r'["""«»\']+', '', cleaned).strip()
-    # Ищем совпадение в таблице
     for keywords, trade_name in STORE_NAME_MAP:
         for kw in keywords:
             if kw in name_lower or kw in cleaned:
                 return trade_name
-    # Не нашли — возвращаем очищенное название
     result = cleaned.strip().title()
     return result if result else raw_name
 
 
 def extract_family_member(text: str) -> str:
-    """Ищет имя члена семьи в тексте, возвращает полное имя или ''."""
     t = text.lower()
     for key, full_name in FAMILY_MEMBERS.items():
         if key in t:
@@ -127,11 +119,6 @@ def extract_family_member(text: str) -> str:
 
 
 def parse_caption_instruction(caption: str) -> dict:
-    """
-    Разбирает подпись к фото чека.
-    'обучение Маргарите танцы 2400' →
-    {категория: Обучение, подкатегория: Танцы, получатель: Маргарита П., сумма: 2400}
-    """
     text_lower = caption.lower()
     result = {
         "использовать_подпись": True,
@@ -142,21 +129,15 @@ def parse_caption_instruction(caption: str) -> dict:
         "магазин": "",
         "сумма": None,
     }
-
-    # Ищем сумму
     amounts = re.findall(r'\d[\d\s]*(?:[.,]\d+)?', caption)
     if amounts:
         try:
             result["сумма"] = float(amounts[-1].replace(" ", "").replace(",", "."))
         except ValueError:
             pass
-
-    # Ищем члена семьи
     family = extract_family_member(caption)
     if family:
         result["получатель"] = family
-
-    # Ищем категорию
     for cat, keywords in CATEGORY_RULES.items():
         for kw in keywords:
             if kw in text_lower:
@@ -164,8 +145,6 @@ def parse_caption_instruction(caption: str) -> dict:
                 break
         if result["категория"] != "Прочее":
             break
-
-    # Подкатегория
     subcat_map = {
         "танц": "Танцы", "английск": "Английский", "математик": "Математика",
         "рисован": "Рисование", "музык": "Музыка", "спорт": "Спорт",
@@ -175,26 +154,18 @@ def parse_caption_instruction(caption: str) -> dict:
         if key in text_lower:
             result["подкатегория"] = val
             break
-
     return result
 
 
 def is_multi_line_input(text: str) -> bool:
-    """
-    Определяет, содержит ли текст несколько покупок.
-    Признаки: несколько строк с суммами, или несколько упоминаний руб/₽.
-    Примеры:
-      'Вайлдберриз цветок рассада 500\nМанго 500' → True
-      'Вайлдберриз цветок рассада 500 Манго 500' → True (две суммы)
-    """
+    """Определяет, содержит ли текст несколько покупок."""
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     if len(lines) >= 2:
-        # Проверяем что хотя бы в двух строках есть числа
         lines_with_amounts = sum(1 for l in lines if re.search(r'\d+', l))
         if lines_with_amounts >= 2:
             return True
-    # Проверяем количество отдельных сумм в одной строке
-    amounts = re.findall(r'\b\d+(?:[.,]\d+)?\s*(?:руб|р\.|₽)?', text)
+    # Два и более отдельных числа в одной строке — тоже несколько покупок
+    amounts = re.findall(r'(?<!\d)\d+(?:[.,]\d+)?(?!\d)', text)
     if len(amounts) >= 2:
         return True
     return False
@@ -202,14 +173,10 @@ def is_multi_line_input(text: str) -> bool:
 
 def classify_text_multi(text: str) -> list:
     """
-    Разбирает текст с несколькими покупками.
-    Возвращает список операций.
-    'Вайлдберриз цветок рассада 500\nМанго 500' →
-    [{"категория":"Одежда","магазин":"Wildberries","сумма":500,...},
-     {"категория":"Продукты","сумма":500,...}]
+    Разбирает текст с несколькими покупками на отдельные операции.
+    ВАЖНО: если все товары из одного магазина — магазин ставится у ВСЕХ.
     """
     if not groq_client:
-        # Fallback: разбиваем по строкам вручную
         return _split_lines_fallback(text)
 
     income_words = ["зарплата", "аванс", "доход", "получил", "получила",
@@ -218,34 +185,27 @@ def classify_text_multi(text: str) -> list:
     family = extract_family_member(text)
     family_hint = f'\nЧлен семьи: "{family}"' if family else ""
 
-    prompt = f"""Ты помощник для учёта финансов. Разбери текст на отдельные покупки/операции.
+    prompt = f"""Ты помощник для учёта финансов. Разбери текст на отдельные покупки.
 Верни ТОЛЬКО JSON массив без markdown, каждый элемент — отдельная операция.
 
 Текст: "{text}"{family_hint}
 
-Правила:
-- Каждая покупка/товар — отдельный элемент массива
-- wildberries/вайлдберриз/wb → магазин "Wildberries", категория "Одежда"
-- ozon/озон → магазин "Ozon", категория "Одежда"
-- Продукты (манго, яблоки, молоко и т.д.) → категория "Продукты"
-- Если магазин один, но товары разные — каждый товар отдельной строкой с тем же магазином
+ВАЖНЫЕ ПРАВИЛА:
+- Каждый товар/покупка — отдельный элемент массива
+- Если в тексте упомянут магазин (wildberries, пятерочка и т.д.) — ставь его магазином У ВСЕХ товаров из этого списка
+- wildberries/вайлдберриз/wb/вб → магазин "Wildberries"
+- ozon/озон → магазин "Ozon"
+- Продукты (фрукты, овощи, молоко и т.д.) → категория "Продукты"
+- Если магазин один на весь список — у каждого товара одинаковый магазин
 - зарплата/аванс/пришло → тип "доход", иначе "расход"
 
 Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Обучение, Дети,
 Животные, Красота, Бытовая химия, Одежда, Развлечения, Подписки, Табак, Доход, Переводы, Прочее
 
+Пример для "Вайлдберриз цветок рассада 500 Манго 500":
 [
-  {{
-    "тип": "расход",
-    "сумма": 500,
-    "категория": "Одежда",
-    "подкатегория": "",
-    "магазин": "Wildberries",
-    "описание": "цветок рассада",
-    "получатель": "",
-    "отправитель": "",
-    "уверенность": 0.9
-  }}
+  {{"тип":"расход","сумма":500,"категория":"Одежда","подкатегория":"","магазин":"Wildberries","описание":"цветок рассада","получатель":"","отправитель":"","уверенность":0.9}},
+  {{"тип":"расход","сумма":500,"категория":"Продукты","подкатегория":"","магазин":"Wildberries","описание":"манго","получатель":"","отправитель":"","уверенность":0.9}}
 ]"""
 
     try:
@@ -257,7 +217,6 @@ def classify_text_multi(text: str) -> list:
         items = json.loads(raw)
         if not isinstance(items, list):
             items = [items]
-        # Заполняем семью если модель не заполнила
         for item in items:
             if family:
                 if item.get("тип") == "расход" and not item.get("получатель"):
@@ -271,7 +230,6 @@ def classify_text_multi(text: str) -> list:
 
 
 def _split_lines_fallback(text: str) -> list:
-    """Fallback: разбиваем по строкам если Groq недоступен."""
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     if len(lines) < 2:
         lines = [text]
@@ -290,15 +248,12 @@ def classify_text(text: str) -> dict:
     amounts = [float(a.replace(" ", "").replace(",", ".")) for a in amounts if a.strip()]
     main_amount = amounts[0] if amounts else 0.0
 
-    # Тип операции
     income_words = ["зарплата", "аванс", "доход", "получил", "получила",
                     "пришло", "приход", "перевел", "перевела", "прислал", "прислала"]
     op_type = "доход" if any(w in text_lower for w in income_words) else "расход"
 
-    # Член семьи
     family = extract_family_member(text)
 
-    # Детальный ввод с магазином
     store_name = None
     for store in GROCERY_STORES:
         if store in text_lower:
@@ -308,12 +263,10 @@ def classify_text(text: str) -> dict:
     if store_name and len(amounts) > 1:
         return _classify_detailed(text, store_name, amounts, op_type)
 
-    # Словарный поиск
     for category, keywords in CATEGORY_RULES.items():
         for keyword in keywords:
             if keyword in text_lower:
                 subcat = get_subcat(category, text_lower)
-                # Определяем магазин из ключевого слова
                 if category == "Одежда" and keyword in ("wildberries", "вайлдберриз", "вайлдберис"):
                     store_display = "Wildberries"
                 elif category == "Одежда" and keyword in ("ozon", "озон"):
@@ -472,7 +425,7 @@ def read_receipt_image(image_bytes: bytes) -> dict:
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
         prompt = """Прочитай чек и верни ТОЛЬКО JSON без markdown.
 
-Найди торговое название магазина — это логотип крупно вверху чека.
+Найди торговое название магазина — логотип крупно вверху чека.
 Юридическое название (ООО, АО, ЗАО) — НЕ использовать.
 
 {
@@ -498,7 +451,7 @@ def read_receipt_image(image_bytes: bytes) -> dict:
         )
         raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(raw)
-        # Нормализуем название магазина в коде — независимо от ответа модели
+        # Нормализуем название магазина независимо от ответа модели
         if isinstance(result, dict) and result.get("магазин"):
             result["магазин"] = normalize_store_name(result["магазин"])
         return result
