@@ -2,6 +2,7 @@
 Обработчик фото — чеки и QR-коды.
 Поддерживает подпись к фото: отправь фото с текстом
 "обучение Маргарите танцы" — бот использует это вместо автоопределения категории.
+Работает и с фото, и с изображением отправленным как файл (документ).
 """
 
 import logging
@@ -29,9 +30,6 @@ CATEGORY_KEYWORDS = {
     "Кафе":          ["кофе", "латте", "капучино", "чай пакет"],
 }
 
-# ====== Таблица нормализации названия магазина ======
-# Ключи — фрагменты которые могут встретиться в юрлице или названии
-# Значения — правильное торговое название
 STORE_NAME_MAP = [
     (["агроторг", "пятерочка", "пятёрочка", "pyaterochka", "5ка", "5-ка"], "Пятёрочка"),
     (["тандер", "магнит", "magnit"], "Магнит"),
@@ -54,34 +52,21 @@ STORE_NAME_MAP = [
 ]
 
 def normalize_store_name(raw_name: str) -> str:
-    """
-    Принимает любое название магазина (юрлицо или торговое),
-    возвращает нормальное торговое название.
-    Если не распознано — убирает ООО/АО/ЗАО и возвращает очищенное.
-    """
     if not raw_name:
         return ""
-
     name_lower = raw_name.lower().strip()
-
-    # Убираем мусор: ООО, АО, ЗАО, кавычки, лишние пробелы
     cleaned = re.sub(
         r'\b(ооо|оао|зао|пао|ао|общество с ограниченной ответственностью|'
         r'акционерное общество|публичное акционерное общество)\b',
         '', name_lower
     )
     cleaned = re.sub(r'["""«»\']+', '', cleaned).strip()
-
-    # Ищем совпадение в таблице
     for keywords, trade_name in STORE_NAME_MAP:
         for kw in keywords:
             if kw in name_lower or kw in cleaned:
                 return trade_name
-
-    # Если не нашли — возвращаем очищенное название с заглавной буквы
     result = cleaned.strip().title()
     return result if result else raw_name
-# ====================================================
 
 
 def classify_item(name: str) -> str:
@@ -141,14 +126,10 @@ def get_check_from_api(qr_params: dict) -> dict | None:
 
 
 def check_data_to_operations(check: dict, instruction: dict | None = None) -> tuple[list, str, float]:
-    """
-    Конвертирует данные чека в операции.
-    Если передан instruction — применяет категорию/получателя из подписи.
-    """
     items = check.get("items", [])
     store_raw = (check.get("user", "") or check.get("retailPlaceName", "") or "")
     store_raw = re.sub(r'"', '', store_raw).strip()[:40]
-    store = normalize_store_name(store_raw)  # нормализуем
+    store = normalize_store_name(store_raw)
 
     date_raw = str(check.get("dateTime", "") or check.get("localDateTime", ""))
     op_date = ""
@@ -200,11 +181,6 @@ def check_data_to_operations(check: dict, instruction: dict | None = None) -> tu
 
 
 def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
-    """
-    Читает чек через Groq Vision.
-    Возвращает словарь: {"магазин": "...", "позиции": [...]}
-    Магазин дополнительно нормализуется через normalize_store_name.
-    """
     if not groq_client:
         return None
     try:
@@ -239,13 +215,11 @@ def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
         raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(raw)
 
-        # Если модель вернула список (старый формат) — оборачиваем
         if isinstance(result, list):
             return {"магазин": "", "позиции": result}
 
         if isinstance(result, dict):
             raw_store = result.get("магазин", "")
-            # Нормализуем название магазина в коде — независимо от того, что вернула модель
             normalized_store = normalize_store_name(raw_store)
             logger.info(f"Магазин из модели: '{raw_store}' → нормализовано: '{normalized_store}'")
             return {
@@ -259,6 +233,34 @@ def read_receipt_with_groq(image_bytes: bytes) -> dict | None:
         return None
 
 
+async def _download_image(update: Update, context) -> bytes | None:
+    """
+    Скачивает изображение — неважно как оно пришло: как фото или как файл-документ.
+    Возвращает байты изображения или None если не удалось.
+    """
+    try:
+        # Случай 1: пришло как обычное фото
+        if update.message.photo:
+            photo = update.message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            buf = io.BytesIO()
+            await file.download_to_memory(buf)
+            return buf.getvalue()
+
+        # Случай 2: пришло как документ (файл через скрепку)
+        if update.message.document:
+            doc = update.message.document
+            file = await context.bot.get_file(doc.file_id)
+            buf = io.BytesIO()
+            await file.download_to_memory(buf)
+            return buf.getvalue()
+
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка скачивания изображения: {e}")
+        return None
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = (update.message.caption or "").strip()
     instruction = None
@@ -269,11 +271,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📷 Смотрю на фото...")
 
     try:
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        buf = io.BytesIO()
-        await file.download_to_memory(buf)
-        image_bytes = buf.getvalue()
+        # ====== ИСПРАВЛЕНО: скачиваем изображение независимо от способа отправки ======
+        image_bytes = await _download_image(update, context)
+        if not image_bytes:
+            await update.message.reply_text("❌ Не удалось получить изображение.")
+            return
+        # ==============================================================================
 
         # Шаг 1: QR-код
         qr_text = decode_qr_from_image(image_bytes)
@@ -386,7 +389,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _reply_receipt_result(update, operations, store, total, ok, instruction):
-    """Формирует ответ после обработки чека."""
     lines = []
     for op in operations[:15]:
         lines.append(f"• {op['описание'] or op['категория']} — {op['сумма']:,.0f} ₽")
