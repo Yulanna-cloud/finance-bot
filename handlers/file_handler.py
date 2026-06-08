@@ -1,6 +1,7 @@
 """
 Обработчик файлов банковских выписок.
 PDF Сбербанка парсится собственным кодом без ИИ.
+Если документ — картинка (jpg/jpeg/png/webp) — передаём в photo_handler.
 """
 
 import logging
@@ -256,11 +257,23 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     filename = doc.file_name or ""
+    mime_type = doc.mime_type or ""
     ext = os.path.splitext(filename)[1].lower()
+
+    # ====== ИСПРАВЛЕНО: если документ — картинка, передаём в photo_handler ======
+    IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif"}
+    IMAGE_EXTS  = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+
+    if mime_type in IMAGE_MIMES or ext in IMAGE_EXTS:
+        from handlers.photo_handler import handle_photo
+        await handle_photo(update, context)
+        return
+    # ===========================================================================
 
     if ext not in (".csv", ".xlsx", ".xls", ".pdf"):
         await update.message.reply_text(
-            "📄 Поддерживаю файлы *CSV*, *Excel* (.xlsx, .xls) и *PDF* (выписка Сбербанка)",
+            "📄 Поддерживаю файлы *CSV*, *Excel* (.xlsx, .xls) и *PDF* (выписка Сбербанка)\n"
+            "Фото чека отправляй как обычное фото, не как файл 📷",
             parse_mode="Markdown"
         )
         return
@@ -315,7 +328,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("\n".join(preview_lines), parse_mode="Markdown")
 
-        # Уникальный source для всей выписки — чтобы /delete видел её как одну сессию
         batch_ts = datetime.now(tz=UFA_TZ).strftime("%Y%m%d_%H%M")
         batch_source = f"выписка_сбер_{batch_ts}"
 
