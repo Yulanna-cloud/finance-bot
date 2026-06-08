@@ -51,7 +51,8 @@ CATEGORY_RULES = {
     "Животные":     ["корм", "ветеринар", "whiskas", "royal canin"],
     "Красота":      ["салон", "парикмахер", "маникюр", "тени", "тушь", "помада", "косметик"],
     "Бытовая химия":["порошок", "мыло", "шампунь", "гель", "фейри", "зубная", "туалетная бумага"],
-    "Одежда":       ["одежда", "обувь", "куртка", "кроссовк", "wildberries", "ozon", "трусы", "носки"],
+    "Одежда":       ["одежда", "обувь", "куртка", "кроссовк", "wildberries", "вайлдберриз",
+                     "вайлдберис", "ozon", "озон", "трусы", "носки"],
     "Развлечения":  ["кино", "театр", "концерт", "музей"],
     "Подписки":     ["яндекс плюс", "yandex plus", "netflix", "spotify", "icloud"],
     "Табак":        ["сигарет", "табак", "папирос", "вейп"],
@@ -68,6 +69,52 @@ GROCERY_STORES = [
     "монеточка", "перекресток", "лента", "вкусвилл",
     "самокат", "яндекс лавка", "spar", "fix price", "дикси", "окей"
 ]
+
+# Таблица нормализации названия магазина: юрлицо → торговое название
+STORE_NAME_MAP = [
+    (["агроторг", "пятерочка", "пятёрочка", "pyaterochka", "5ка", "5-ка"], "Пятёрочка"),
+    (["тандер", "магнит", "magnit"], "Магнит"),
+    (["дикси", "dixi"], "Дикси"),
+    (["перекресток", "перекрёсток", "perekrestok"], "Перекрёсток"),
+    (["лента", "lenta"], "Лента"),
+    (["вкусвилл", "вкус вилл", "vkusvill"], "ВкусВилл"),
+    (["окей", "o'key", "okey"], "О'Кей"),
+    (["светофор"], "Светофор"),
+    (["монеточка", "monetochka"], "Монеточка"),
+    (["самокат", "samokat"], "Самокат"),
+    (["метро", "metro cash"], "Метро"),
+    (["ашан", "auchan"], "Ашан"),
+    (["глобус"], "Глобус"),
+    (["спар", "spar"], "Спар"),
+    (["fix price", "фикс прайс", "фикспрайс"], "Fix Price"),
+    (["красное белое", "красное & белое"], "Красное&Белое"),
+    (["бристоль"], "Бристоль"),
+]
+
+
+def normalize_store_name(raw_name: str) -> str:
+    """
+    Принимает любое название магазина (юрлицо или торговое),
+    возвращает нормальное торговое название.
+    """
+    if not raw_name:
+        return ""
+    name_lower = raw_name.lower().strip()
+    # Убираем юридические формы
+    cleaned = re.sub(
+        r'\b(ооо|оао|зао|пао|ао|общество с ограниченной ответственностью|'
+        r'акционерное общество|публичное акционерное общество)\b',
+        '', name_lower
+    )
+    cleaned = re.sub(r'["""«»\']+', '', cleaned).strip()
+    # Ищем совпадение в таблице
+    for keywords, trade_name in STORE_NAME_MAP:
+        for kw in keywords:
+            if kw in name_lower or kw in cleaned:
+                return trade_name
+    # Не нашли — возвращаем очищенное название
+    result = cleaned.strip().title()
+    return result if result else raw_name
 
 
 def extract_family_member(text: str) -> str:
@@ -118,7 +165,7 @@ def parse_caption_instruction(caption: str) -> dict:
         if result["категория"] != "Прочее":
             break
 
-    # Подкатегория — если есть "танцы", "английский" и т.д.
+    # Подкатегория
     subcat_map = {
         "танц": "Танцы", "английск": "Английский", "математик": "Математика",
         "рисован": "Рисование", "музык": "Музыка", "спорт": "Спорт",
@@ -130,6 +177,110 @@ def parse_caption_instruction(caption: str) -> dict:
             break
 
     return result
+
+
+def is_multi_line_input(text: str) -> bool:
+    """
+    Определяет, содержит ли текст несколько покупок.
+    Признаки: несколько строк с суммами, или несколько упоминаний руб/₽.
+    Примеры:
+      'Вайлдберриз цветок рассада 500\nМанго 500' → True
+      'Вайлдберриз цветок рассада 500 Манго 500' → True (две суммы)
+    """
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if len(lines) >= 2:
+        # Проверяем что хотя бы в двух строках есть числа
+        lines_with_amounts = sum(1 for l in lines if re.search(r'\d+', l))
+        if lines_with_amounts >= 2:
+            return True
+    # Проверяем количество отдельных сумм в одной строке
+    amounts = re.findall(r'\b\d+(?:[.,]\d+)?\s*(?:руб|р\.|₽)?', text)
+    if len(amounts) >= 2:
+        return True
+    return False
+
+
+def classify_text_multi(text: str) -> list:
+    """
+    Разбирает текст с несколькими покупками.
+    Возвращает список операций.
+    'Вайлдберриз цветок рассада 500\nМанго 500' →
+    [{"категория":"Одежда","магазин":"Wildberries","сумма":500,...},
+     {"категория":"Продукты","сумма":500,...}]
+    """
+    if not groq_client:
+        # Fallback: разбиваем по строкам вручную
+        return _split_lines_fallback(text)
+
+    income_words = ["зарплата", "аванс", "доход", "получил", "получила",
+                    "пришло", "приход", "перевел", "перевела", "прислал", "прислала"]
+    op_type = "доход" if any(w in text.lower() for w in income_words) else "расход"
+    family = extract_family_member(text)
+    family_hint = f'\nЧлен семьи: "{family}"' if family else ""
+
+    prompt = f"""Ты помощник для учёта финансов. Разбери текст на отдельные покупки/операции.
+Верни ТОЛЬКО JSON массив без markdown, каждый элемент — отдельная операция.
+
+Текст: "{text}"{family_hint}
+
+Правила:
+- Каждая покупка/товар — отдельный элемент массива
+- wildberries/вайлдберриз/wb → магазин "Wildberries", категория "Одежда"
+- ozon/озон → магазин "Ozon", категория "Одежда"
+- Продукты (манго, яблоки, молоко и т.д.) → категория "Продукты"
+- Если магазин один, но товары разные — каждый товар отдельной строкой с тем же магазином
+- зарплата/аванс/пришло → тип "доход", иначе "расход"
+
+Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Обучение, Дети,
+Животные, Красота, Бытовая химия, Одежда, Развлечения, Подписки, Табак, Доход, Переводы, Прочее
+
+[
+  {{
+    "тип": "расход",
+    "сумма": 500,
+    "категория": "Одежда",
+    "подкатегория": "",
+    "магазин": "Wildberries",
+    "описание": "цветок рассада",
+    "получатель": "",
+    "отправитель": "",
+    "уверенность": 0.9
+  }}
+]"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
+        items = json.loads(raw)
+        if not isinstance(items, list):
+            items = [items]
+        # Заполняем семью если модель не заполнила
+        for item in items:
+            if family:
+                if item.get("тип") == "расход" and not item.get("получатель"):
+                    item["получатель"] = family
+                if item.get("тип") == "доход" and not item.get("отправитель"):
+                    item["отправитель"] = family
+        return items
+    except Exception as e:
+        logger.error(f"Ошибка classify_text_multi: {e}")
+        return _split_lines_fallback(text)
+
+
+def _split_lines_fallback(text: str) -> list:
+    """Fallback: разбиваем по строкам если Groq недоступен."""
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if len(lines) < 2:
+        lines = [text]
+    result = []
+    for line in lines:
+        op = classify_text(line)
+        if op and op.get("сумма"):
+            result.append(op)
+    return result if result else [classify_text(text)]
 
 
 def classify_text(text: str) -> dict:
@@ -162,12 +313,21 @@ def classify_text(text: str) -> dict:
         for keyword in keywords:
             if keyword in text_lower:
                 subcat = get_subcat(category, text_lower)
+                # Определяем магазин из ключевого слова
+                if category == "Одежда" and keyword in ("wildberries", "вайлдберриз", "вайлдберис"):
+                    store_display = "Wildberries"
+                elif category == "Одежда" and keyword in ("ozon", "озон"):
+                    store_display = "Ozon"
+                elif category in ("Продукты", "Кафе"):
+                    store_display = keyword.title()
+                else:
+                    store_display = ""
                 return {
                     "тип": op_type,
                     "сумма": main_amount,
                     "категория": category,
                     "подкатегория": subcat,
-                    "магазин": keyword.title() if category in ("Продукты", "Кафе") else "",
+                    "магазин": store_display,
                     "описание": text,
                     "получатель": family if op_type == "расход" else "",
                     "отправитель": family if op_type == "доход" else "",
@@ -177,7 +337,6 @@ def classify_text(text: str) -> dict:
     if not groq_client:
         return _default(text, main_amount, op_type)
 
-    # Передаём в Groq с контекстом о семье
     family_hint = f'\nЧлен семьи упомянут: "{family}" — если расход, запиши в получатель; если доход — в отправитель.' if family else ""
 
     prompt = f"""Ты помощник для учёта финансов. Верни ТОЛЬКО JSON без markdown.
@@ -190,8 +349,9 @@ def classify_text(text: str) -> dict:
 Животные, Красота, Бытовая химия, Одежда, Развлечения, Подписки, Табак, Доход, Переводы, Прочее
 
 Правила:
+- wildberries/вайлдберриз → категория "Одежда", магазин "Wildberries"
+- ozon/озон → категория "Одежда", магазин "Ozon"
 - танцы/секция/кружок/урок/репетитор → категория "Обучение"
-- если упомянуто для кого (Маргарите, Диане) → запиши в "подкатегория" имя
 - зарплата/аванс/пришло/приход → тип "доход"
 
 {{
@@ -215,7 +375,6 @@ def classify_text(text: str) -> dict:
         result = json.loads(raw)
         if not result.get("сумма") and main_amount:
             result["сумма"] = main_amount
-        # Добавляем семью если Groq не заполнил
         if family and op_type == "расход" and not result.get("получатель"):
             result["получатель"] = family
         if family and op_type == "доход" and not result.get("отправитель"):
@@ -311,30 +470,13 @@ def read_receipt_image(image_bytes: bytes) -> dict:
         return {"ошибка": "нет GROQ_API_KEY", "позиции": []}
     try:
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-        # ====== ИСПРАВЛЕНО: промпт теперь требует торговое название, не юрлицо ======
         prompt = """Прочитай чек и верни ТОЛЬКО JSON без markdown.
 
-КРИТИЧЕСКИ ВАЖНО для поля "магазин":
-- Используй ТОРГОВОЕ название (логотип или бренд вверху чека), НЕ юридическое название
-- Юридическое название (ООО, АО, ЗАО, ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ) в поле "магазин" ЗАПРЕЩЕНО
-- Логотип всегда крупно вверху чека — это и есть правильное название
-- Примеры правильных названий: Пятёрочка, Магнит, Лента, Перекрёсток, Дикси, ВкусВилл, Светофор
-- Если торговое название не распознаётся — напиши короткое слово без ООО/АО/ЗАО
-
-Соответствие юрлицо → торговое название:
-- ООО АГРОТОРГ / ООО ВЫРУЧАЙ / содержит ПЯТЕРОЧКА → Пятёрочка
-- ООО ТАНДЕР / содержит МАГНИТ → Магнит
-- ООО ДИКСИ → Дикси
-- ЗАО ТАНДЕР → Магнит
-- АО ТАНДЕР → Магнит
-- содержит ПЕРЕКРЕСТОК → Перекрёсток
-- содержит ЛЕНТА → Лента
-
-Также читай все позиции товаров из чека.
+Найди торговое название магазина — это логотип крупно вверху чека.
+Юридическое название (ООО, АО, ЗАО) — НЕ использовать.
 
 {
-  "магазин": "торговое название магазина",
+  "магазин": "торговое название с логотипа вверху чека",
   "дата": "дата или null",
   "итого": общая_сумма_числом,
   "позиции": [
@@ -345,8 +487,7 @@ def read_receipt_image(image_bytes: bytes) -> dict:
     {"категория": "Продукты", "сумма": общая_сумма_числом}
   ]
 }
-Категории для поля категории: Продукты, Бытовая химия, Табак, Красота, Одежда, Прочее"""
-        # ==========================================================================
+Категории: Продукты, Бытовая химия, Табак, Красота, Одежда, Прочее"""
 
         response = groq_client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
@@ -356,7 +497,11 @@ def read_receipt_image(image_bytes: bytes) -> dict:
             ]}]
         )
         raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
+        result = json.loads(raw)
+        # Нормализуем название магазина в коде — независимо от ответа модели
+        if isinstance(result, dict) and result.get("магазин"):
+            result["магазин"] = normalize_store_name(result["магазин"])
+        return result
     except Exception as e:
         logger.error(f"Ошибка чека Groq: {e}")
         return {"ошибка": str(e), "позиции": []}
