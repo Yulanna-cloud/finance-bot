@@ -18,15 +18,30 @@ else:
 # Члены семьи — имя → полное имя
 FAMILY_MEMBERS = {
     "маргарита": "Маргарита П.",
+    "маргарите": "Маргарита П.",
+    "маргариты": "Маргарита П.",
+    "рита":      "Маргарита П.",
+    "рите":      "Маргарита П.",
+    "риты":      "Маргарита П.",
     "диана":     "Диана Ш.",
+    "диане":     "Диана Ш.",
+    "дианы":     "Диана Ш.",
     "алексей":   "Алексей П.",
+    "алексею":   "Алексей П.",
     "алёша":     "Алексей П.",
     "алеша":     "Алексей П.",
+    "алёше":     "Алексей П.",
+    "алеше":     "Алексей П.",
     "райса":     "Райса Г.",
+    "райсе":     "Райса Г.",
     "юланна":    "Юланна Г.",
+    "юланне":    "Юланна Г.",
     "салават":   "Салават Г.",
+    "салавату":  "Салават Г.",
     "дамир":     "Дамир Г.",
+    "дамиру":    "Дамир Г.",
     "ольга":     "Ольга Г.",
+    "ольге":     "Ольга Г.",
 }
 
 CATEGORY_RULES = {
@@ -70,7 +85,6 @@ GROCERY_STORES = [
     "самокат", "яндекс лавка", "spar", "fix price", "дикси", "окей"
 ]
 
-# Таблица нормализации: юрлицо/любое название → торговое
 STORE_NAME_MAP = [
     (["агроторг", "пятерочка", "пятёрочка", "pyaterochka", "5ка", "5-ка"], "Пятёрочка"),
     (["тандер", "магнит", "magnit"], "Магнит"),
@@ -111,6 +125,7 @@ def normalize_store_name(raw_name: str) -> str:
 
 
 def extract_family_member(text: str) -> str:
+    """Ищет имя члена семьи в тексте, возвращает полное имя или ''."""
     t = text.lower()
     for key, full_name in FAMILY_MEMBERS.items():
         if key in t:
@@ -164,7 +179,6 @@ def is_multi_line_input(text: str) -> bool:
         lines_with_amounts = sum(1 for l in lines if re.search(r'\d+', l))
         if lines_with_amounts >= 2:
             return True
-    # Два и более отдельных числа в одной строке — тоже несколько покупок
     amounts = re.findall(r'(?<!\d)\d+(?:[.,]\d+)?(?!\d)', text)
     if len(amounts) >= 2:
         return True
@@ -172,10 +186,6 @@ def is_multi_line_input(text: str) -> bool:
 
 
 def classify_text_multi(text: str) -> list:
-    """
-    Разбирает текст с несколькими покупками на отдельные операции.
-    ВАЖНО: если все товары из одного магазина — магазин ставится у ВСЕХ.
-    """
     if not groq_client:
         return _split_lines_fallback(text)
 
@@ -217,6 +227,7 @@ def classify_text_multi(text: str) -> list:
         items = json.loads(raw)
         if not isinstance(items, list):
             items = [items]
+        # Всегда дописываем семью после модели
         for item in items:
             if family:
                 if item.get("тип") == "расход" and not item.get("получатель"):
@@ -252,6 +263,7 @@ def classify_text(text: str) -> dict:
                     "пришло", "приход", "перевел", "перевела", "прислал", "прислала"]
     op_type = "доход" if any(w in text_lower for w in income_words) else "расход"
 
+    # Ищем члена семьи — ДО любых других проверок
     family = extract_family_member(text)
 
     store_name = None
@@ -263,6 +275,7 @@ def classify_text(text: str) -> dict:
     if store_name and len(amounts) > 1:
         return _classify_detailed(text, store_name, amounts, op_type)
 
+    # Словарный поиск категории
     for category, keywords in CATEGORY_RULES.items():
         for keyword in keywords:
             if keyword in text_lower:
@@ -282,13 +295,16 @@ def classify_text(text: str) -> dict:
                     "подкатегория": subcat,
                     "магазин": store_display,
                     "описание": text,
+                    # ====== ИСПРАВЛЕНО: семья заполняется всегда, даже при словарном поиске ======
                     "получатель": family if op_type == "расход" else "",
                     "отправитель": family if op_type == "доход" else "",
+                    # ==============================================================================
                     "уверенность": 0.95
                 }
 
+    # Если словарь не нашёл — идём в Groq
     if not groq_client:
-        return _default(text, main_amount, op_type)
+        return _default(text, main_amount, op_type, family, op_type)
 
     family_hint = f'\nЧлен семьи упомянут: "{family}" — если расход, запиши в получатель; если доход — в отправитель.' if family else ""
 
@@ -306,6 +322,7 @@ def classify_text(text: str) -> dict:
 - ozon/озон → категория "Одежда", магазин "Ozon"
 - танцы/секция/кружок/урок/репетитор → категория "Обучение"
 - зарплата/аванс/пришло/приход → тип "доход"
+- если упомянут получатель (Маргарите, Рите, Диане и т.д.) → заполни поле "получатель"
 
 {{
   "тип": "{op_type}",
@@ -328,6 +345,7 @@ def classify_text(text: str) -> dict:
         result = json.loads(raw)
         if not result.get("сумма") and main_amount:
             result["сумма"] = main_amount
+        # Всегда дописываем семью — даже если Groq не заполнил
         if family and op_type == "расход" and not result.get("получатель"):
             result["получатель"] = family
         if family and op_type == "доход" and not result.get("отправитель"):
@@ -335,7 +353,7 @@ def classify_text(text: str) -> dict:
         return result
     except Exception as e:
         logger.error(f"Ошибка Groq classify: {e}")
-        return _default(text, main_amount, op_type)
+        return _default(text, main_amount, op_type, family, op_type)
 
 
 def _classify_detailed(text: str, store_name: str, amounts: list, op_type: str) -> dict:
@@ -393,11 +411,17 @@ def get_subcat(category: str, text_lower: str) -> str:
     return ""
 
 
-def _default(text, amount, op_type):
+def _default(text, amount, op_type, family="", family_op_type="расход"):
     return {
-        "тип": op_type, "сумма": amount, "категория": "Прочее",
-        "подкатегория": "", "магазин": "", "описание": text,
-        "получатель": "", "отправитель": "", "уверенность": 0.3
+        "тип": op_type,
+        "сумма": amount,
+        "категория": "Прочее",
+        "подкатегория": "",
+        "магазин": "",
+        "описание": text,
+        "получатель": family if family and family_op_type == "расход" else "",
+        "отправитель": family if family and family_op_type == "доход" else "",
+        "уверенность": 0.3
     }
 
 
@@ -451,7 +475,6 @@ def read_receipt_image(image_bytes: bytes) -> dict:
         )
         raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(raw)
-        # Нормализуем название магазина независимо от ответа модели
         if isinstance(result, dict) and result.get("магазин"):
             result["магазин"] = normalize_store_name(result["магазин"])
         return result
