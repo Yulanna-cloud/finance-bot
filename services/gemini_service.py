@@ -213,9 +213,11 @@ def classify_text_multi(text: str) -> list:
     if not groq_client:
         return _split_lines_fallback(text)
 
-    income_words = ["зарплата", "аванс", "доход", "получил", "получила",
-                    "пришло", "приход", "перевел", "перевела", "прислал", "прислала"]
-    op_type = "доход" if any(w in text.lower() for w in income_words) else "расход"
+    income_words = ["зарплата", "аванс", "оклад", "фриланс", "подработка",
+                    "получил", "получила", "пришло", "приход", "прислал", "прислала"]
+    transfer_income = any(w in text.lower() for w in ["перевел", "перевела"]) and \
+                      any(w in text.lower() for w in [" от ", "от него", "от неё", "от нее"])
+    op_type = "доход" if (any(w in text.lower() for w in income_words) or transfer_income) else "расход"
     family = extract_family_member(text)
     family_hint = f'\nЧлен семьи: "{family}"' if family else ""
 
@@ -249,10 +251,14 @@ def classify_text_multi(text: str) -> list:
             items = [items]
         for item in items:
             if family:
-                if item.get("тип") == "расход" and not item.get("получатель"):
+                # Жёстко: расход → получатель, доход → отправитель. Никогда оба.
+                item_type = item.get("тип", op_type)
+                if item_type == "расход":
                     item["получатель"] = family
-                if item.get("тип") == "доход" and not item.get("отправитель"):
+                    item["отправитель"] = ""
+                else:
                     item["отправитель"] = family
+                    item["получатель"] = ""
         return items
     except Exception as e:
         logger.error(f"Ошибка classify_text_multi: {e}")
@@ -278,9 +284,13 @@ def classify_text(text: str) -> dict:
     amounts = [float(a.replace(" ", "").replace(",", ".")) for a in amounts if a.strip()]
     main_amount = amounts[0] if amounts else 0.0
 
-    income_words = ["зарплата", "аванс", "доход", "получил", "получила",
-                    "пришло", "приход", "перевел", "перевела", "прислал", "прислала"]
-    op_type = "доход" if any(w in text_lower for w in income_words) else "расход"
+    # Слова которые ВСЕГДА означают доход
+    income_words = ["зарплата", "аванс", "оклад", "фриланс", "подработка",
+                    "получил", "получила", "пришло", "приход", "прислал", "прислала"]
+    # «перевел/перевела» — доход только если есть «от» рядом, иначе расход (я перевела Диане)
+    transfer_income = any(w in text_lower for w in ["перевел", "перевела"]) and \
+                      any(w in text_lower for w in [" от ", "от него", "от неё", "от нее"])
+    op_type = "доход" if (any(w in text_lower for w in income_words) or transfer_income) else "расход"
 
     family = extract_family_member(text)
 
@@ -358,10 +368,15 @@ def classify_text(text: str) -> dict:
         result = json.loads(raw)
         if not result.get("сумма") and main_amount:
             result["сумма"] = main_amount
-        if family and op_type == "расход" and not result.get("получатель"):
-            result["получатель"] = family
-        if family and op_type == "доход" and not result.get("отправитель"):
-            result["отправитель"] = family
+        # Жёстко: при расходе — семья только в получатель, отправитель пустой
+        # При доходе — семья только в отправитель, получатель пустой
+        if family:
+            if op_type == "расход":
+                result["получатель"] = family
+                result["отправитель"] = ""
+            else:
+                result["отправитель"] = family
+                result["получатель"] = ""
         return result
     except Exception as e:
         logger.error(f"Ошибка Groq classify: {e}")
