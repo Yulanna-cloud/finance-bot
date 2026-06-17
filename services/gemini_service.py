@@ -79,6 +79,32 @@ CATEGORY_RULES = {
     "Электротовары":["гирлянда", "лампочк", "батарейк", "удлинитель", "розетк", "провод"],
 }
 
+# Словарь для определения категории отдельных товаров в тексте
+# Порядок важен — Табак проверяется раньше Продуктов
+ITEM_CATEGORY_RULES = [
+    ("Табак",          ["сигарет", "табак", "папирос", "вейп", "электронн сигарет"]),
+    ("Алкоголь",       ["пиво", "вино", "водка", "коньяк", "шампанское", "алкоголь"]),
+    ("Животные",       ["корм", "whiskas", "royal canin", "purina", "felix"]),
+    ("Бытовая химия",  ["порошок", "гель", "фейри", "domestos", "туалетная бумага",
+                        "мыло", "шампунь", "зубная", "паста", "средство для"]),
+    ("Красота",        ["крем", "тушь", "помада", "тени", "лак", "духи", "дезодорант"]),
+    ("Медицина",       ["таблетки", "витамины", "лекарство", "аптека"]),
+    ("Кафе",           ["кофе", "латте", "капучино", "чай пакет"]),
+    ("Электротовары",  ["гирлянда", "лампочк", "батарейк", "удлинитель", "розетк"]),
+    ("Одежда",         ["одежда", "обувь", "куртка", "кроссовк", "трусы", "носки"]),
+    ("Дети",           ["детск", "игрушк", "lego", "подгузник"]),
+]
+
+
+def classify_item_by_name(name: str) -> str:
+    """Определяет категорию товара по его названию через наш словарь."""
+    name_lower = name.lower()
+    for category, keywords in ITEM_CATEGORY_RULES:
+        if any(kw in name_lower for kw in keywords):
+            return category
+    return "Продукты"
+
+
 GROCERY_STORES = [
     "пятерочка", "магнит", "находка", "ежик", "светофор",
     "монеточка", "перекресток", "лента", "вкусвилл",
@@ -125,7 +151,6 @@ def normalize_store_name(raw_name: str) -> str:
 
 
 def extract_family_member(text: str) -> str:
-    """Ищет имя члена семьи в тексте, возвращает полное имя или ''."""
     t = text.lower()
     for key, full_name in FAMILY_MEMBERS.items():
         if key in t:
@@ -173,7 +198,6 @@ def parse_caption_instruction(caption: str) -> dict:
 
 
 def is_multi_line_input(text: str) -> bool:
-    """Определяет, содержит ли текст несколько покупок."""
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     if len(lines) >= 2:
         lines_with_amounts = sum(1 for l in lines if re.search(r'\d+', l))
@@ -202,20 +226,16 @@ def classify_text_multi(text: str) -> list:
 
 ВАЖНЫЕ ПРАВИЛА:
 - Каждый товар/покупка — отдельный элемент массива
-- Если в тексте упомянут магазин (wildberries, пятерочка и т.д.) — ставь его магазином У ВСЕХ товаров из этого списка
+- Если в тексте упомянут магазин — ставь его магазином У ВСЕХ товаров
 - wildberries/вайлдберриз/wb/вб → магазин "Wildberries"
 - ozon/озон → магазин "Ozon"
-- Продукты (фрукты, овощи, молоко и т.д.) → категория "Продукты"
-- Если магазин один на весь список — у каждого товара одинаковый магазин
 - зарплата/аванс/пришло → тип "доход", иначе "расход"
 
 Категории: Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Обучение, Дети,
 Животные, Красота, Бытовая химия, Одежда, Развлечения, Подписки, Табак, Доход, Переводы, Прочее
 
-Пример для "Вайлдберриз цветок рассада 500 Манго 500":
 [
-  {{"тип":"расход","сумма":500,"категория":"Одежда","подкатегория":"","магазин":"Wildberries","описание":"цветок рассада","получатель":"","отправитель":"","уверенность":0.9}},
-  {{"тип":"расход","сумма":500,"категория":"Продукты","подкатегория":"","магазин":"Wildberries","описание":"манго","получатель":"","отправитель":"","уверенность":0.9}}
+  {{"тип":"расход","сумма":500,"категория":"Одежда","подкатегория":"","магазин":"Wildberries","описание":"цветок рассада","получатель":"","отправитель":"","уверенность":0.9}}
 ]"""
 
     try:
@@ -227,7 +247,6 @@ def classify_text_multi(text: str) -> list:
         items = json.loads(raw)
         if not isinstance(items, list):
             items = [items]
-        # Всегда дописываем семью после модели
         for item in items:
             if family:
                 if item.get("тип") == "расход" and not item.get("получатель"):
@@ -263,7 +282,6 @@ def classify_text(text: str) -> dict:
                     "пришло", "приход", "перевел", "перевела", "прислал", "прислала"]
     op_type = "доход" if any(w in text_lower for w in income_words) else "расход"
 
-    # Ищем члена семьи — ДО любых других проверок
     family = extract_family_member(text)
 
     store_name = None
@@ -275,7 +293,6 @@ def classify_text(text: str) -> dict:
     if store_name and len(amounts) > 1:
         return _classify_detailed(text, store_name, amounts, op_type)
 
-    # Словарный поиск категории
     for category, keywords in CATEGORY_RULES.items():
         for keyword in keywords:
             if keyword in text_lower:
@@ -295,14 +312,11 @@ def classify_text(text: str) -> dict:
                     "подкатегория": subcat,
                     "магазин": store_display,
                     "описание": text,
-                    # ====== ИСПРАВЛЕНО: семья заполняется всегда, даже при словарном поиске ======
                     "получатель": family if op_type == "расход" else "",
                     "отправитель": family if op_type == "доход" else "",
-                    # ==============================================================================
                     "уверенность": 0.95
                 }
 
-    # Если словарь не нашёл — идём в Groq
     if not groq_client:
         return _default(text, main_amount, op_type, family, op_type)
 
@@ -322,7 +336,6 @@ def classify_text(text: str) -> dict:
 - ozon/озон → категория "Одежда", магазин "Ozon"
 - танцы/секция/кружок/урок/репетитор → категория "Обучение"
 - зарплата/аванс/пришло/приход → тип "доход"
-- если упомянут получатель (Маргарите, Рите, Диане и т.д.) → заполни поле "получатель"
 
 {{
   "тип": "{op_type}",
@@ -345,7 +358,6 @@ def classify_text(text: str) -> dict:
         result = json.loads(raw)
         if not result.get("сумма") and main_amount:
             result["сумма"] = main_amount
-        # Всегда дописываем семью — даже если Groq не заполнил
         if family and op_type == "расход" and not result.get("получатель"):
             result["получатель"] = family
         if family and op_type == "доход" and not result.get("отправитель"):
@@ -357,39 +369,88 @@ def classify_text(text: str) -> dict:
 
 
 def _classify_detailed(text: str, store_name: str, amounts: list, op_type: str) -> dict:
-    if not groq_client:
-        return _default(text, amounts[0] if amounts else 0, op_type)
+    """
+    Разбирает текст вида 'Пятерочка 272. Из них сигареты 169' на позиции.
+    Полностью на нашем коде — без Groq, без галлюцинаций.
+    Логика:
+      - amounts[0] = общая сумма чека
+      - amounts[1..] = суммы отдельных товаров
+      - остаток = общая - сумма позиций → записывается как 'Продукты'
+    """
+    total = amounts[0]
+    store_display = store_name.title()
+    text_lower = text.lower()
 
-    prompt = f"""Разбери покупку и верни ТОЛЬКО JSON массив без markdown.
+    # Ищем именованные позиции: слово + сумма
+    # Паттерн: захватываем описание товара и его сумму
+    item_pattern = re.compile(
+        r'(?:из них|из которых|в том числе|включая|:\s*)?'
+        r'([а-яёa-z][а-яёa-z\s\.\-&]{1,40}?)\s+'
+        r'(\d+(?:[.,]\d+)?)\s*(?:руб|р\.|₽)?',
+        re.IGNORECASE
+    )
 
-Текст: "{text}"
+    named_items = []
+    named_total = 0.0
 
-Правила:
-- Первая сумма — общий чек магазина
-- Остальные суммы — отдельные товары
-- Остаток (общая - перечисленные) → Продукты
-- Если остаток <= 0 — не добавляй Продукты
+    for m in item_pattern.finditer(text_lower):
+        desc = m.group(1).strip()
+        try:
+            price = float(m.group(2).replace(",", "."))
+        except ValueError:
+            continue
 
-Категории: Табак, Бытовая химия, Красота, Одежда, Электротовары, Продукты, Прочее
+        # Пропускаем если это итоговая сумма или название магазина
+        if price == total:
+            continue
+        if any(store in desc for store in GROCERY_STORES):
+            continue
+        if price <= 0:
+            continue
 
-[{{"категория":"Табак","сумма":185,"описание":"сигареты"}}]"""
+        category = classify_item_by_name(desc)
+        named_items.append({
+            "категория": category,
+            "сумма": price,
+            "описание": desc,
+        })
+        named_total += price
 
-    try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = response.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
-        items = json.loads(raw)
-        return {
-            "тип": op_type,
-            "магазин": store_name.title(),
-            "мультизапись": True,
-            "позиции": items
-        }
-    except Exception as e:
-        logger.error(f"Ошибка детального разбора: {e}")
-        return _default(text, amounts[0] if amounts else 0, op_type)
+    # Считаем остаток на продукты
+    remainder = round(total - named_total, 2)
+
+    positions = []
+
+    # Сначала именованные позиции
+    for item in named_items:
+        positions.append({
+            "категория": item["категория"],
+            "сумма": item["сумма"],
+            "описание": item["описание"],
+        })
+
+    # Если есть остаток — добавляем как Продукты
+    if remainder > 0.5:  # порог 50 копеек чтобы не добавлять копейки
+        positions.append({
+            "категория": "Продукты",
+            "сумма": remainder,
+            "описание": "Продукты",
+        })
+
+    # Если вообще ничего не нашли — вся сумма как Продукты
+    if not positions:
+        positions.append({
+            "категория": "Продукты",
+            "сумма": total,
+            "описание": "Продукты",
+        })
+
+    return {
+        "тип": op_type,
+        "магазин": store_display,
+        "мультизапись": True,
+        "позиции": positions,
+    }
 
 
 def get_subcat(category: str, text_lower: str) -> str:
