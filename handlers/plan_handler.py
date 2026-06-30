@@ -145,6 +145,11 @@ async def _show_edit_keyboard(query_or_msg, context, edit_msg=False):
     cats = plan.get("категории", {})
     total = sum(cats.values())
 
+    plan = context.user_data.get("pending_plan", {})
+    income = plan.get("доход", 0)
+    variable = plan.get("переменные", total)
+    free = variable - total
+
     lines = ["✏️ *Редактор плана*\n",
              "Нажми на категорию чтобы изменить сумму:\n"]
     buttons = []
@@ -155,7 +160,11 @@ async def _show_edit_keyboard(query_or_msg, context, edit_msg=False):
             InlineKeyboardButton("🗑", callback_data=f"planedit_del_{cat}"),
         ])
 
-    lines.append(f"\n💰 Итого: *{total:,.0f} ₽*")
+    lines.append(f"\n💰 Распределено: *{total:,.0f} ₽*")
+    if free > 0:
+        lines.append(f"🟢 Свободный резерв: *{free:,.0f} ₽*")
+    elif free < 0:
+        lines.append(f"🔴 Превышение бюджета: *{abs(free):,.0f} ₽* — Герман нервничает 😬")
     buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data="planedit_add")])
     buttons.append([InlineKeyboardButton("✅ Сохранить и записать", callback_data="planedit_save")])
     buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="plan_cancel")])
