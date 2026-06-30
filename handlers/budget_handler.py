@@ -137,32 +137,52 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report = get_monthly_report(month=month, year=year)
     cats = report.get("все_категории", {}) if "ошибка" not in report else {}
 
-    lines = [f"💼 *Бюджет на {MONTH_NAMES_RU[month]} {year}:*\n"]
+    # Строим таблицу в моноширинном шрифте
+    header = f"💼 Бюджет на {MONTH_NAMES_RU[month]} {year}\n"
+
+    rows = []
+    total_spent = 0
+    total_limit = 0
     for cat, limit in sorted(budgets.items()):
         spent = cats.get(cat, 0)
-        pct = spent / limit * 100 if limit > 0 else 0
         left = limit - spent
+        total_spent += spent
+        total_limit += limit
 
-        if pct >= 100:
-            bar = "🔴"
-            status = f"перерасход {abs(left):,.0f} ₽!"
-        elif pct >= 80:
-            bar = "🟡"
-            status = f"осталось {left:,.0f} ₽"
-        elif pct >= 50:
-            bar = "🟢"
-            status = f"осталось {left:,.0f} ₽"
+        if spent >= limit:
+            dot = "🔴"
+            left_str = f"−{abs(left):,.0f}"
+        elif spent >= limit * 0.8:
+            dot = "🟡"
+            left_str = f"+{left:,.0f}"
         else:
-            bar = "🟢"
-            status = f"осталось {left:,.0f} ₽"
+            dot = "🟢"
+            left_str = f"+{left:,.0f}"
 
-        lines.append(
-            f"{bar} *{cat}*: {spent:,.0f} / {limit:,.0f} ₽ ({pct:.0f}%) — {status}"
+        rows.append((dot, cat, spent, limit, left_str))
+
+    # Ширины колонок
+    max_cat   = max(len(r[1]) for r in rows)
+    col_cat   = max(max_cat, 10)
+
+    table_lines = []
+    table_lines.append(f"{'Категория':<{col_cat}}  {'Факт':>7}  {'Лимит':>7}  {'Осталось':>9}")
+    table_lines.append("─" * (col_cat + 30))
+    for dot, cat, spent, limit, left_str in rows:
+        table_lines.append(
+            f"{dot} {cat:<{col_cat-2}}  {spent:>6,.0f}  {limit:>6,.0f}  {left_str:>9}"
         )
 
-    lines.append("\n_Чтобы изменить лимит: бюджет Продукты 15000_")
-    lines.append("_Чтобы удалить лимит: удалить бюджет Кафе_")
-    await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+    # Итого
+    total_left = total_limit - total_spent
+    left_sign = "+" if total_left >= 0 else "−"
+    table_lines.append("─" * (col_cat + 30))
+    table_lines.append(
+        f"{'ИТОГО':<{col_cat}}  {total_spent:>6,.0f}  {total_limit:>6,.0f}  {left_sign}{abs(total_left):,.0f}"
+    )
+
+    table = "```\n" + "\n".join(table_lines) + "\n```"
+    await msg.reply_text(header + table, parse_mode="Markdown")
 
 
 async def handle_budget_set(update: Update, context: ContextTypes.DEFAULT_TYPE,
