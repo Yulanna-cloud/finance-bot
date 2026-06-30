@@ -747,7 +747,13 @@ def smart_query(query_text: str) -> dict:
 
             # Поиск по имени человека
             elif target_person:
-                if target_person in all_text:
+                # Ищем и по ключу ("леш") и по частям полного имени ("алексей", "маргарит")
+                person_fragments = [target_person]
+                if target_person_full:
+                    for part in target_person_full.lower().replace(".", "").split():
+                        if len(part) >= 4:
+                            person_fragments.append(part[:5])
+                if any(frag in all_text for frag in person_fragments):
                     if is_income_search and is_income_row:
                         match = True
                     elif not is_income_search:
