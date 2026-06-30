@@ -182,7 +182,8 @@ async def _send_report(query, target_month: int, target_year: int):
                     if matched and matched not in shown:
                         amount = all_cats[matched]
                         pct = (amount / expenses * 100) if expenses > 0 else 0
-                        group_lines.append(f"  • {matched}: *{amount:,.0f} ₽* ({pct:.0f}%)")
+                        display = matched[0].upper() + matched[1:] if matched else matched
+                        group_lines.append(f"  • {display}: *{amount:,.0f} ₽* ({pct:.0f}%)")
                         shown.add(matched)
                         if matched.lower() == "переводы" and transfers_detail:
                             for recv, sum_ in sorted(transfers_detail.items(), key=lambda x: x[1], reverse=True):

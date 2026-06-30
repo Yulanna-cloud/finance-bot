@@ -83,49 +83,73 @@ async def handle_analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     cats = cur.get("все_категории", {})
-    total = cur["расходы"]
-    if not cats or total == 0:
-        await msg.reply_text("Расходов пока нет. Герман одобряет такой подход 👍")
+    total_expense = cur["расходы"]
+    total_income  = cur["доходы"]
+    balance       = cur["остаток"]
+
+    lines = [f"🧠 *Анализ — {MONTH_NAMES_RU[now.month]} {now.year}*\n"]
+
+    # Приход / Расход / Остаток
+    bal_emoji = "✅" if balance >= 0 else "🔴"
+    bal_sign  = "+" if balance >= 0 else "−"
+    lines.append("💰 *Приход и расход:*")
+    lines.append(f"  💰 Доходы:  *{total_income:,.0f} ₽*")
+    lines.append(f"  💸 Расходы: *{total_expense:,.0f} ₽*")
+    lines.append(f"  {bal_emoji} Остаток:  *{bal_sign}{abs(balance):,.0f} ₽*")
+
+    if balance < 0:
+        lines.append("  _Расходы превысили доходы — Герман обеспокоен 😟_")
+    elif balance < total_income * 0.1:
+        lines.append("  _Осталось совсем чуть-чуть. Герман на нервах 😬_")
+    else:
+        lines.append("  _Остаток выглядит прилично. Герман спокоен 😌_")
+
+    if not cats or total_expense == 0:
+        await msg.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
-    # Топ-3 категории
+    # Топ-3 категории по расходам (с нормализацией регистра)
     top3 = sorted(cats.items(), key=lambda x: x[1], reverse=True)[:3]
-
-    lines = [f"🧠 *Анализ трат — {MONTH_NAMES_RU[now.month]}*\n"]
-
-    lines.append("🔝 *Топ расходов:*")
+    lines.append("\n🔝 *Топ расходов:*")
     for i, (cat, amount) in enumerate(top3, 1):
-        pct = amount / total * 100
-        lines.append(f"  {i}. {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
+        pct = amount / total_expense * 100
+        cat_display = cat[0].upper() + cat[1:] if cat else cat
+        lines.append(f"  {i}. {cat_display}: *{amount:,.0f} ₽* ({pct:.0f}%)")
 
     # Комментарий по топ-1
     top_cat, top_amount = top3[0]
-    top_pct = top_amount / total * 100
+    top_pct = top_amount / total_expense * 100
+    top_display = top_cat[0].upper() + top_cat[1:] if top_cat else top_cat
     if top_pct > 40:
-        lines.append(f"\n💬 *{top_cat}* съедает {top_pct:.0f}% всех расходов. Это очень много — Герман смотрит с подозрением 🧐")
+        lines.append(f"\n💬 *{top_display}* — {top_pct:.0f}% всех расходов. Это главная статья, Герман заметил 🧐")
     elif top_pct > 25:
-        lines.append(f"\n💬 *{top_cat}* — главная статья расходов ({top_pct:.0f}%). В целом нормально.")
+        lines.append(f"\n💬 *{top_display}* лидирует ({top_pct:.0f}%). В целом нормально.")
     else:
-        lines.append(f"\n💬 Расходы распределены равномерно. Герман доволен — всё под контролем 👌")
+        lines.append(f"\n💬 Расходы распределены равномерно — всё под контролем 👌")
 
     # Сравнение с прошлым месяцем
     if "ошибка" not in prev and prev["количество"] > 0:
-        diff = total - prev["расходы"]
+        diff = total_expense - prev["расходы"]
         prev_name = MONTH_NAMES_RU[prev_m]
         if diff > 500:
-            lines.append(f"\n📈 По сравнению с *{prev_name}* потратила на *{diff:,.0f} ₽* больше.")
+            lines.append(f"\n📈 Расходы выросли на *{diff:,.0f} ₽* vs {prev_name}.")
             lines.append("_Герман занервничал, но виду не подаёт_ 😅")
         elif diff < -500:
-            lines.append(f"\n📉 По сравнению с *{prev_name}* сэкономила *{abs(diff):,.0f} ₽*!")
+            lines.append(f"\n📉 Сэкономила *{abs(diff):,.0f} ₽* vs {prev_name}!")
             lines.append("_Герман аплодирует стоя_ 👏")
         else:
-            lines.append(f"\n↔️ По сравнению с *{prev_name}* — примерно столько же. Стабильность!")
+            lines.append(f"\n↔️ Примерно как в {prev_name}. Стабильность!")
 
-    # Прогноз
-    if now.day > 0:
-        daily = total / now.day
-        forecast = daily * 30
-        lines.append(f"\n🔮 *Прогноз до конца месяца:* {forecast:,.0f} ₽")
-        lines.append(f"_(темп: {daily:,.0f} ₽/день)_")
+    # Прогноз — только если ещё не конец месяца (до 25-го)
+    import calendar
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    days_left = days_in_month - now.day
+    if now.day <= 25 and now.day > 0:
+        daily = total_expense / now.day
+        forecast = daily * days_in_month
+        lines.append(f"\n🔮 *Прогноз на месяц:* {forecast:,.0f} ₽")
+        lines.append(f"_({now.day} дней прошло, темп {daily:,.0f} ₽/день, осталось {days_left} дн.)_")
+    elif days_left <= 5:
+        lines.append(f"\n📅 До конца месяца {days_left} дн. — почти финиш!")
 
     await msg.reply_text("\n".join(lines), parse_mode="Markdown")
