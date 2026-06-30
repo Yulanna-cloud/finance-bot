@@ -74,13 +74,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_multi_line_input(text):
         items = classify_text_multi(text)
         if not items:
-            await update.message.reply_text("Не смогла разобрать. Напиши каждую покупку отдельным сообщением.")
+            await update.message.reply_text("Герман в замешательстве 🤔 Напиши каждую покупку отдельным сообщением, так проще.")
             return
 
         # Записываем все операции батчем
         operations = [op for op in items if op and op.get("сумма")]
         if not operations:
-            await update.message.reply_text("Не нашла суммы. Напиши: кофе 350")
+            await update.message.reply_text("Суммы не нашёл 🕵️ Попробуй: кофе 350")
             return
 
         ok, errors = write_operations_batch(operations, source="текст")
@@ -103,7 +103,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Одна операция
     data = classify_text(text)
     if not data or not data.get("сумма"):
-        await update.message.reply_text("Не смогла найти сумму. Напиши: кофе 350")
+        await update.message.reply_text("Сумму не нашёл 🧐 Напиши, например: кофе 350")
         return
 
     # Мультизапись (детальный разбор с магазином)

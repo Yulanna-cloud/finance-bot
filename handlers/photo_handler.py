@@ -314,13 +314,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         instruction = parse_caption_instruction(caption)
         await update.message.reply_text(f"📝 Подпись: _{caption}_", parse_mode="Markdown")
 
-    await update.message.reply_text("📷 Смотрю на фото...")
+    await update.message.reply_text("📷 Герман изучает чек...")
 
     try:
         # ====== ИСПРАВЛЕНО: скачиваем изображение независимо от способа отправки ======
         image_bytes = await _download_image(update, context)
         if not image_bytes:
-            await update.message.reply_text("❌ Не удалось получить изображение.")
+            await update.message.reply_text("❌ Фото не получил — попробуй отправить ещё раз.")
             return
         # ==============================================================================
 
@@ -328,7 +328,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qr_text = decode_qr_from_image(image_bytes)
 
         if qr_text:
-            await update.message.reply_text("✅ QR-код найден! Запрашиваю данные чека...")
+            await update.message.reply_text("✅ QR нашёл! Лезу в базу за данными чека...")
             qr_params = parse_qr_params(qr_text)
             if qr_params:
                 check = get_check_from_api(qr_params)
@@ -339,15 +339,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await _reply_receipt_result(update, operations, store, total, ok, instruction)
                         return
                     else:
-                        await update.message.reply_text("⚠️ Чек получен, но позиции не распознаны.")
+                        await update.message.reply_text("⚠️ Чек получил, но позиции не разобрал — странный чек попался.")
                         return
                 else:
-                    await update.message.reply_text("⚠️ QR найден, но данные не получены. Читаю фото...")
+                    await update.message.reply_text("⚠️ QR есть, но данные не пришли. Читаю фото глазами...")
             else:
-                await update.message.reply_text("⚠️ QR не похож на чек. Читаю фото...")
+                await update.message.reply_text("⚠️ QR-код не от чека. Перехожу к ручному чтению...")
 
         # Шаг 2: Groq Vision
-        await update.message.reply_text("🔍 Читаю чек по фото...")
+        await update.message.reply_text("🔍 Читаю по фото, подожди секунду...")
 
         if instruction and instruction.get("сумма"):
             operations = [{
@@ -371,15 +371,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not receipt_data or not receipt_data.get("позиции"):
             if instruction:
                 await update.message.reply_text(
-                    "😔 Не смогла прочитать чек.\n"
-                    "Напиши сумму отдельным сообщением, например:\n"
+                    "😔 Чек не поддался — фото мутновато или освещение подкачало.\n"
+                    "Напиши сумму отдельно, например:\n"
                     f"_{caption} 2400_",
                     parse_mode="Markdown"
                 )
             else:
                 await update.message.reply_text(
-                    "😔 Не смогла прочитать чек.\n"
-                    "Попробуй сфотографировать QR-код или запиши голосом/текстом."
+                    "😔 Не смог прочитать чек. Попробуй навести на QR-код "
+                    "или запиши голосом/текстом — справлюсь 💪"
                 )
             return
 
@@ -422,7 +422,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
 
         if not operations:
-            await update.message.reply_text("❌ Не нашла позиции с суммами.")
+            await update.message.reply_text("❌ Позиции с суммами не нашёл — странный чек 🤨")
             return
 
         total = sum(op["сумма"] for op in operations)
@@ -430,7 +430,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка handle_photo: {e}", exc_info=True)
-        await update.message.reply_text("❌ Что-то пошло не так при обработке фото.")
+        await update.message.reply_text("❌ Что-то пошло не так — Герман разбирается. Попробуй ещё раз 🔧")
 
 
 CATEGORY_EMOJI = {
@@ -465,10 +465,10 @@ async def _ask_confirm_receipt(update, context, operations, store, total):
 
     store_str = f"🏪 *{store}*\n\n" if store else ""
     text = (
-        f"🧾 Проверь чек перед записью:\n\n{store_str}"
+        f"🧾 Герман прочитал чек — проверь:\n\n{store_str}"
         + "\n".join(lines)
         + f"\n\n💰 Итого: *{total:,.0f} ₽*\n\n"
-        "Всё верно?"
+        "Всё верно? Записываю?"
     )
 
     keyboard = InlineKeyboardMarkup([[
@@ -489,13 +489,13 @@ async def handle_receipt_callback(update, context):
 
     if data.startswith("receipt_cancel_"):
         context.chat_data.pop(key, None)
-        await query.edit_message_text("❌ Чек отменён. Ничего не записано.")
+        await query.edit_message_text("❌ Отменено. Герман ничего не записал — как будто и не было 😄")
         return
 
     if data.startswith("receipt_confirm_"):
         pending = context.chat_data.pop(key, None)
         if not pending:
-            await query.edit_message_text("⚠️ Данные чека не найдены. Отправь фото ещё раз.")
+            await query.edit_message_text("⚠️ Данные чека куда-то делись — отправь фото ещё раз, Герман готов 👌")
             return
 
         operations = pending["operations"]

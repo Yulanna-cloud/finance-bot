@@ -41,15 +41,16 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "Привет! Я твой финансовый помощник 💰\n\n"
-        "Что я умею:\n"
-        "🎤 *Голосовое* — скажи «кофе 350» и запишу\n"
-        "📷 *Фото чека* — сфотографируй, разберу по позициям\n"
-        "📷 *Фото с подписью* — напиши «обучение Маргарите танцы»\n"
+        "Привет! Я Герман — твой финансовый помощник 💰\n\n"
+        "Слежу за деньгами, пока ты тратишь. Такая у меня судьба 😄\n\n"
+        "Что умею:\n"
+        "🎤 *Голосовое* — скажи «кофе 350», запишу не моргнув\n"
+        "📷 *Фото чека* — скинь чек, разберу по позициям\n"
+        "📷 *Фото с подписью* — добавь «обучение Рите танцы» и я всё пойму\n"
         "📄 *Файл выписки* — загрузи PDF/CSV/Excel из банка\n"
-        "💬 *Текст* — напиши «такси 300» или «Пятерочка 1200»\n"
-        "❓ *Вопрос* — «сколько пришло от Алексея», «расшифруй обучение»\n\n"
-        "Кнопки внизу — главное меню 👇"
+        "💬 *Текст* — «такси 300» или «Пятёрочка 1200», как удобно\n"
+        "❓ *Вопрос* — «сколько перевела Рите», «расшифруй красота»\n\n"
+        "Кнопки внизу — всё главное 👇"
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
@@ -82,12 +83,16 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔧 Исправляю категории в таблице...")
+    await update.message.reply_text("🔧 Герман на хозяйстве — навожу порядок в категориях...")
     result = fix_categories_in_sheet()
     if "ошибка" in result:
-        await update.message.reply_text(f"❌ Ошибка: {result['ошибка']}")
+        await update.message.reply_text(f"❌ Что-то пошло не так: {result['ошибка']}")
     else:
-        await update.message.reply_text(f"✅ Готово! Исправлено записей: {result['исправлено']}")
+        n = result['исправлено']
+        if n == 0:
+            await update.message.reply_text("✅ Проверил всё — и так чисто, исправлять нечего 👌")
+        else:
+            await update.message.reply_text(f"✅ Готово! Поправил {n} записей — теперь всё по полочкам 📂")
 
 
 MENU_BUTTON_TEXTS = ["🚀 Старт", "📊 Отчёт", "🔍 Расшифровать", "🗑 Удалить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
