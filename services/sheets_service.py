@@ -735,13 +735,13 @@ def smart_query(query_text: str) -> dict:
             match = False
             is_income_row = "доход" in row_type
 
-            # Поиск всех доходов
-            if search_all_income and not search_all_expense:
+            # Поиск всех доходов (только если не ищем конкретного человека)
+            if search_all_income and not search_all_expense and not target_person:
                 if is_income_row:
                     match = True
 
             # Поиск всех расходов
-            elif search_all_expense:
+            elif search_all_expense and not target_person:
                 if not is_income_row:
                     match = True
 
