@@ -302,7 +302,14 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                 if category == "Переводы":
                     ic_recv = find_col_index(["получател"], 14)
                     ic_desc = find_col_index(["описани", "товар"], 13)
-                    recv = _get_cell(raw_row, ic_recv) or _get_cell(raw_row, ic_desc) or "?"
+                    recv_raw = (_get_cell(raw_row, ic_recv) or _get_cell(raw_row, ic_desc) or "?").lower()
+                    # Нормализуем имя через FAMILY_SEARCH
+                    recv_norm = None
+                    for key, full_name in FAMILY_SEARCH.items():
+                        if key in recv_raw:
+                            recv_norm = full_name
+                            break
+                    recv = recv_norm or recv_raw.title() or "?"
                     transfers_detail = expenses.setdefault("__transfers__", {})
                     transfers_detail[recv] = transfers_detail.get(recv, 0) + amount
 
