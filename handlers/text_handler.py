@@ -73,6 +73,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_edit_text(update, context):
         return
 
+    # Если ждём ввод дохода для планирования
+    from handlers.plan_handler import handle_plan_text
+    if await handle_plan_text(update, context):
+        return
+
     t_lower = text.lower()
 
     # Команда: бюджет Продукты 15000
