@@ -310,12 +310,40 @@ def _split_lines_fallback(text: str) -> list:
     return result if result else [classify_text(text)]
 
 
+def extract_date(text: str) -> str | None:
+    """Извлекает дату из текста вида 08.06, 8.06, 08.06.2026, 8 июня и т.п."""
+    from datetime import datetime
+    now_year = datetime.now().year
+    # Формат 08.06 или 8.06 или 08.06.2026
+    m = re.search(r'\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b', text)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else now_year
+        if 1 <= day <= 31 and 1 <= month <= 12:
+            return f"{day:02d}.{month:02d}.{year}"
+    # Формат "8 июня", "8 июля" и т.п.
+    months_ru = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4,
+                 "май": 5, "мая": 5, "июн": 6, "июл": 7, "август": 8,
+                 "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
+    m2 = re.search(r'\b(\d{1,2})\s+([а-яё]+)', text.lower())
+    if m2:
+        day = int(m2.group(1))
+        word = m2.group(2)
+        for key, mon in months_ru.items():
+            if word.startswith(key):
+                if 1 <= day <= 31:
+                    return f"{day:02d}.{mon:02d}.{now_year}"
+    return None
+
+
 def classify_text(text: str) -> dict:
     text_lower = text.lower()
 
     amounts = re.findall(r'\d[\d\s]*(?:[.,]\d+)?', text)
     amounts = [float(a.replace(" ", "").replace(",", ".")) for a in amounts if a.strip()]
     main_amount = amounts[0] if amounts else 0.0
+
+    parsed_date = extract_date(text)
 
     # Слова которые ВСЕГДА означают доход
     income_words = ["зарплата", "аванс", "оклад", "фриланс", "подработка",
@@ -348,7 +376,7 @@ def classify_text(text: str) -> dict:
                     store_display = keyword.title()
                 else:
                     store_display = ""
-                return {
+                res = {
                     "тип": op_type,
                     "сумма": main_amount,
                     "категория": category,
@@ -359,6 +387,9 @@ def classify_text(text: str) -> dict:
                     "отправитель": family if op_type == "доход" else "",
                     "уверенность": 0.95
                 }
+                if parsed_date:
+                    res["дата"] = parsed_date
+                return res
 
     if not groq_client:
         return _default(text, main_amount, op_type, family, op_type)
@@ -415,6 +446,8 @@ def classify_text(text: str) -> dict:
             else:
                 result["отправитель"] = family
                 result["получатель"] = ""
+        if parsed_date:
+            result["дата"] = parsed_date
         return result
     except Exception as e:
         logger.error(f"Ошибка Groq classify: {e}")
