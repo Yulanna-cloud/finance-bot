@@ -753,10 +753,13 @@ def smart_query(query_text: str) -> dict:
                     for part in target_person_full.lower().replace(".", "").split():
                         if len(part) >= 4:
                             person_fragments.append(part[:5])
-                if any(frag in all_text for frag in person_fragments):
-                    if is_income_search and is_income_row:
+                if is_income_search and is_income_row:
+                    # Для дохода: смотрим только Отправитель + Описание, не Получатель
+                    sender_desc = normalize_yo((row_sender + " " + row_desc).lower())
+                    if any(frag in sender_desc for frag in person_fragments):
                         match = True
-                    elif not is_income_search:
+                elif not is_income_search:
+                    if any(frag in all_text for frag in person_fragments):
                         match = True
 
             # Поиск по категории
