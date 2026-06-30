@@ -252,10 +252,32 @@ async def handle_plan_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         cur = plan.get("категории", {}).get(cat, 0)
         context.user_data["plan_edit_cat"] = cat
         context.user_data["plan_step"] = "await_edit_amount"
+        # Кнопки с быстрыми суммами + назад
+        quick = [500, 1000, 1500, 2000, 3000, 5000, 7000, 10000]
+        rows = [quick[i:i+4] for i in range(0, len(quick), 4)]
+        buttons = [
+            [InlineKeyboardButton(f"{v:,} ₽", callback_data=f"planedit_amt_{cat}_{v}") for v in row]
+            for row in rows
+        ]
+        buttons.append([InlineKeyboardButton("◀ Назад без изменений", callback_data="planedit_back")])
         await query.edit_message_text(
-            f"✏️ *{cat}*\nСейчас: *{cur:,.0f} ₽*\n\nВведи новую сумму (только цифры):",
-            parse_mode="Markdown"
+            f"✏️ *{cat}*\nСейчас: *{cur:,.0f} ₽*\n\n"
+            f"Выбери новую сумму кнопкой или напиши своё число и отправь сообщением:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
+        return
+
+    # Быстрый выбор суммы кнопкой
+    if data.startswith("planedit_amt_"):
+        parts = data.replace("planedit_amt_", "").rsplit("_", 1)
+        cat, amount_str = parts[0], parts[1]
+        amount = float(amount_str)
+        plan = context.user_data.setdefault("pending_plan", {})
+        plan.setdefault("категории", {})[cat] = amount
+        context.user_data.pop("plan_edit_cat", None)
+        context.user_data.pop("plan_step", None)
+        await _show_edit_keyboard(query, context)
         return
 
     # Добавить новую категорию
@@ -302,6 +324,8 @@ async def handle_plan_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Сохранить отредактированный план
     if data == "planedit_save":
+        context.user_data.pop("plan_step", None)
+        context.user_data.pop("plan_edit_cat", None)
         plan = context.user_data.pop("pending_plan", None)
         month = context.user_data.pop("pending_plan_month", now_ufa().month)
         if not plan:
