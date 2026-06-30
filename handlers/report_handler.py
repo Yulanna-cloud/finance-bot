@@ -151,6 +151,8 @@ async def _send_report(query, target_month: int, target_year: int):
             f"🔢 Операций: {count}\n",
         ]
 
+        transfers_detail = report.get("переводы_детали", {})
+
         if all_cats:
             lines.append("📂 *Расходы по категориям:*")
             medals = ["🥇", "🥈", "🥉"]
@@ -159,6 +161,9 @@ async def _send_report(query, target_month: int, target_year: int):
                 medal = medals[i] if i < len(medals) else "•"
                 pct = (amount / expenses * 100) if expenses > 0 else 0
                 lines.append(f"{medal} {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
+                if cat == "Переводы" and transfers_detail:
+                    for recv, sum_ in sorted(transfers_detail.items(), key=lambda x: x[1], reverse=True):
+                        lines.append(f"  └ {recv}: {sum_:,.0f} ₽")
 
         # Прогноз только для текущего месяца
         if target_month == now.month and target_year == now.year:

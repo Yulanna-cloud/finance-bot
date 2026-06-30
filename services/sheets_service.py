@@ -298,9 +298,22 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             else:
                 total_expense += amount
                 expenses[category] = expenses.get(category, 0) + amount
+                # Для переводов собираем получателей
+                if category == "Переводы":
+                    ic_recv = find_col_index(["получател"], 14)
+                    ic_desc = find_col_index(["описани", "товар"], 13)
+                    recv = _get_cell(raw_row, ic_recv) or _get_cell(raw_row, ic_desc) or "?"
+                    transfers_detail = expenses.setdefault("__transfers__", {})
+                    transfers_detail[recv] = transfers_detail.get(recv, 0) + amount
 
-        top_categories = sorted(expenses.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_categories = sorted(
+            [(k, v) for k, v in expenses.items() if not k.startswith("__")],
+            key=lambda x: x[1], reverse=True
+        )[:5]
         logger.info(f"Отчёт за {target_month_name} {target_year}: доходы={income}, расходы={total_expense}, операций={count}")
+
+        transfers_detail = expenses.pop("__transfers__", {})
+        clean_expenses = {k: v for k, v in expenses.items() if not k.startswith("__")}
 
         return {
             "месяц": target_month_name,
@@ -310,7 +323,8 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             "остаток": income - total_expense,
             "количество": count,
             "топ_категорий": top_categories,
-            "все_категории": expenses,
+            "все_категории": clean_expenses,
+            "переводы_детали": transfers_detail,
         }
 
     except Exception as e:
@@ -417,6 +431,52 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         return {"ошибка": str(e)}
 
 
+def fix_categories_in_sheet() -> dict:
+    """Исправляет категории существующих записей в таблице."""
+    try:
+        client = get_sheets_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
+        all_values = sheet.get_all_values()
+        if len(all_values) <= 1:
+            return {"исправлено": 0}
+
+        headers = [h.strip().lower() for h in all_values[0]]
+        def find_col(keywords, default):
+            for kw in keywords:
+                for i, h in enumerate(headers):
+                    if kw in h:
+                        return i
+            return default
+
+        ic_cat  = find_col(["категори"], 9)
+        ic_desc = find_col(["описани", "товар"], 13)
+        ic_shop = find_col(["магазин"], 12)
+
+        rules = [
+            # (ключевые слова в описании/магазине, новая категория)
+            (["клод", "claude", "anthropic", "openai", "chatgpt"], "Подписки ИИ"),
+            (["мтс", "мобильн", "tele2", "теле2", "билайн", "мегафон"], "Связь"),
+        ]
+
+        fixed = 0
+        for row_idx, row in enumerate(all_values[1:], start=2):
+            desc = (row[ic_desc] if ic_desc < len(row) else "").lower()
+            shop = (row[ic_shop] if ic_shop < len(row) else "").lower()
+            cat  = row[ic_cat] if ic_cat < len(row) else ""
+            combined = desc + " " + shop
+
+            for keywords, new_cat in rules:
+                if any(kw in combined for kw in keywords) and cat != new_cat:
+                    sheet.update_cell(row_idx, ic_cat + 1, new_cat)
+                    fixed += 1
+                    break
+
+        return {"исправлено": fixed}
+    except Exception as e:
+        logger.error(f"Ошибка fix_categories: {e}")
+        return {"ошибка": str(e)}
+
+
 def smart_query(query_text: str) -> dict:
     """
     Отвечает на вопросы типа:
@@ -463,13 +523,21 @@ def smart_query(query_text: str) -> dict:
         income_words = ["пришло", "приход", "перевел", "перевела", "получил", "получила", "от "]
         is_income_search = any(w in raw_query for w in income_words)
 
+        # Определяем режим расшифровки
+        is_breakdown = any(w in raw_query for w in ["расшифруй", "детали", "подробно", "из чего", "что входит"])
+
         # Определяем категорию из запроса
         cat_search = None
         cat_map = {
             "обучени": "Обучение", "танц": "Обучение", "продукт": "Продукты",
             "кафе": "Кафе", "транспорт": "Транспорт", "одежд": "Одежда",
-            "медицин": "Медицина", "аптек": "Медицина", "животн": "Животные",
-            "красот": "Красота", "подписк": "Подписки",
+            "медицин": "Медицина", "аптек": "Аптека", "животн": "Животные",
+            "красот": "Красота", "подписк": "Подписки", "подписки ии": "Подписки ИИ",
+            "клод": "Подписки ИИ", "claude": "Подписки ИИ",
+            "связь": "Связь", "мтс": "Связь", "телефон": "Связь",
+            "коммунал": "Коммуналка", "интернет": "Интернет",
+            "перевод": "Переводы", "переводы": "Переводы",
+            "прочее": "Прочее", "табак": "Табак", "алкогол": "Алкоголь",
         }
         for key, cat in cat_map.items():
             if key in raw_query:
@@ -566,12 +634,13 @@ def smart_query(query_text: str) -> dict:
         person_label = f" {target_person_full}" if target_person_full else ""
         cat_label = f" {cat_search}" if cat_search else ""
 
+        limit = 30 if is_breakdown else 10
         lines = [
-            f"🔍 Результаты{person_label}{cat_label}{month_label}:",
+            f"🔍 {'Расшифровка' if is_breakdown else 'Результаты'}{person_label}{cat_label}{month_label}:",
             f"💰 Итого: *{total_amount:,.0f} ₽*",
-            "\n📋 Записи (последние 10):"
+            f"\n📋 Записи{' (все)' if is_breakdown else ' (последние 10)'}:"
         ]
-        lines.extend(found_lines[-10:])
+        lines.extend(found_lines[-limit:])
 
         return {"ответ": "\n".join(lines)}
 

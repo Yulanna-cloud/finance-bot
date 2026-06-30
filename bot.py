@@ -11,6 +11,7 @@ from telegram.ext import (
 from handlers.text_handler import handle_text
 from handlers.voice_handler import handle_voice
 from handlers.photo_handler import handle_photo, handle_receipt_callback
+from services.sheets_service import fix_categories_in_sheet
 from handlers.file_handler import handle_file
 from handlers.report_handler import handle_report, handle_report_callback
 from handlers.archive_handler import handle_archive, handle_smart_query
@@ -51,6 +52,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
 
+async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔧 Исправляю категории в таблице...")
+    result = fix_categories_in_sheet()
+    if "ошибка" in result:
+        await update.message.reply_text(f"❌ Ошибка: {result['ошибка']}")
+    else:
+        await update.message.reply_text(f"✅ Готово! Исправлено записей: {result['исправлено']}")
+
+
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -65,6 +75,7 @@ def main():
     app.add_handler(CommandHandler("archive", handle_archive))
     app.add_handler(CommandHandler("delete", handle_delete))
     app.add_handler(CommandHandler("restore", handle_restore))
+    app.add_handler(CommandHandler("fix", fix_command))
 
     app.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
     app.add_handler(CallbackQueryHandler(handle_report_callback, pattern="^report_"))
