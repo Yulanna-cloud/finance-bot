@@ -105,6 +105,16 @@ def check_budget_alert(category: str, spent: float, limit: float) -> str | None:
     return None
 
 
+def _budget_target_month():
+    """Если конец месяца (25+), показываем бюджет следующего месяца."""
+    now = now_ufa()
+    if now.day >= 25:
+        if now.month == 12:
+            return 1, now.year + 1
+        return now.month + 1, now.year
+    return now.month, now.year
+
+
 async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает текущие бюджеты и их исполнение."""
     from services.sheets_service import get_monthly_report
@@ -122,11 +132,12 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    month, year = _budget_target_month()
     now = now_ufa()
-    report = get_monthly_report(month=now.month, year=now.year)
+    report = get_monthly_report(month=month, year=year)
     cats = report.get("все_категории", {}) if "ошибка" not in report else {}
 
-    lines = [f"💼 *Бюджет на {MONTH_NAMES_RU[now.month]}:*\n"]
+    lines = [f"💼 *Бюджет на {MONTH_NAMES_RU[month]} {year}:*\n"]
     for cat, limit in sorted(budgets.items()):
         spent = cats.get(cat, 0)
         pct = spent / limit * 100 if limit > 0 else 0

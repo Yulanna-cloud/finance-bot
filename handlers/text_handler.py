@@ -208,5 +208,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 alert = check_budget_alert(cat, spent, budgets[cat])
                 if alert:
                     await update.message.reply_text(alert, parse_mode="Markdown")
+
     else:
         await update.message.reply_text("❌ Ошибка записи.")
