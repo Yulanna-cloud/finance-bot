@@ -166,11 +166,11 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     col_cat   = max(max_cat, 10)
 
     table_lines = []
-    table_lines.append(f"{'Категория':<{col_cat}}  {'Факт':>7}  {'Лимит':>7}  {'Осталось':>9}")
+    table_lines.append(f"{'Категория':<{col_cat}}  {'Лимит':>7}  {'Факт':>7}  {'Остаток':>9}")
     table_lines.append("─" * (col_cat + 30))
     for dot, cat, spent, limit, left_str in rows:
         table_lines.append(
-            f"{dot} {cat:<{col_cat-2}}  {spent:>6,.0f}  {limit:>6,.0f}  {left_str:>9}"
+            f"{dot} {cat:<{col_cat-2}}  {limit:>6,.0f}  {spent:>6,.0f}  {left_str:>9}"
         )
 
     # Итого
@@ -178,7 +178,7 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     left_sign = "+" if total_left >= 0 else "−"
     table_lines.append("─" * (col_cat + 30))
     table_lines.append(
-        f"{'ИТОГО':<{col_cat}}  {total_spent:>6,.0f}  {total_limit:>6,.0f}  {left_sign}{abs(total_left):,.0f}"
+        f"{'ИТОГО':<{col_cat}}  {total_limit:>6,.0f}  {total_spent:>6,.0f}  {left_sign}{abs(total_left):,.0f}"
     )
 
     table = "```\n" + "\n".join(table_lines) + "\n```"
