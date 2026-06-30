@@ -137,10 +137,8 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report = get_monthly_report(month=month, year=year)
     cats = report.get("все_категории", {}) if "ошибка" not in report else {}
 
-    # Строим таблицу в моноширинном шрифте
-    header = f"💼 Бюджет на {MONTH_NAMES_RU[month]} {year}\n"
+    lines = [f"💼 *Бюджет на {MONTH_NAMES_RU[month]} {year}*\n"]
 
-    rows = []
     total_spent = 0
     total_limit = 0
     for cat, limit in sorted(budgets.items()):
@@ -151,38 +149,26 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if spent >= limit:
             dot = "🔴"
-            left_str = f"−{abs(left):,.0f}"
+            left_str = f"−{abs(left):,.0f} ₽"
         elif spent >= limit * 0.8:
             dot = "🟡"
-            left_str = f"+{left:,.0f}"
+            left_str = f"+{left:,.0f} ₽"
         else:
             dot = "🟢"
-            left_str = f"+{left:,.0f}"
+            left_str = f"+{left:,.0f} ₽"
 
-        rows.append((dot, cat, spent, limit, left_str))
-
-    # Ширины колонок
-    max_cat   = max(len(r[1]) for r in rows)
-    col_cat   = max(max_cat, 10)
-
-    table_lines = []
-    table_lines.append(f"{'Категория':<{col_cat}}  {'Лимит':>7}  {'Факт':>7}  {'Остаток':>9}")
-    table_lines.append("─" * (col_cat + 30))
-    for dot, cat, spent, limit, left_str in rows:
-        table_lines.append(
-            f"{dot} {cat:<{col_cat-2}}  {limit:>6,.0f}  {spent:>6,.0f}  {left_str:>9}"
+        lines.append(
+            f"{dot} *{cat}*\n"
+            f"   Лимит {limit:,.0f} ₽  ·  Факт {spent:,.0f} ₽  ·  Остаток {left_str}"
         )
 
-    # Итого
     total_left = total_limit - total_spent
-    left_sign = "+" if total_left >= 0 else "−"
-    table_lines.append("─" * (col_cat + 30))
-    table_lines.append(
-        f"{'ИТОГО':<{col_cat}}  {total_limit:>6,.0f}  {total_spent:>6,.0f}  {left_sign}{abs(total_left):,.0f}"
+    sign = "+" if total_left >= 0 else "−"
+    lines.append(
+        f"\n📊 *Итого:* лимит {total_limit:,.0f} ₽  ·  факт {total_spent:,.0f} ₽  ·  остаток {sign}{abs(total_left):,.0f} ₽"
     )
 
-    table = "```\n" + "\n".join(table_lines) + "\n```"
-    await msg.reply_text(header + table, parse_mode="Markdown")
+    await msg.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def handle_budget_set(update: Update, context: ContextTypes.DEFAULT_TYPE,
