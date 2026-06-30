@@ -189,7 +189,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
     app.add_handler(CallbackQueryHandler(handle_edit_callback, pattern="^edit_"))
-    app.add_handler(CallbackQueryHandler(handle_plan_callback, pattern="^plan_"))
+    app.add_handler(CallbackQueryHandler(handle_plan_callback, pattern="^plan"))
     app.add_handler(CallbackQueryHandler(handle_report_callback, pattern="^report_"))
     app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern="^del_"))
     app.add_handler(CallbackQueryHandler(handle_restore_callback, pattern="^restore_"))
