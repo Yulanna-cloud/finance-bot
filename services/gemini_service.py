@@ -169,10 +169,14 @@ def normalize_store_name(raw_name: str) -> str:
     return result if result else raw_name
 
 
+def normalize_yo(text: str) -> str:
+    return text.replace("ё", "е").replace("Ё", "Е")
+
+
 def extract_family_member(text: str) -> str:
-    t = text.lower()
+    t = normalize_yo(text.lower())
     for key, full_name in FAMILY_MEMBERS.items():
-        if key in t:
+        if normalize_yo(key) in t:
             return full_name
     return ""
 

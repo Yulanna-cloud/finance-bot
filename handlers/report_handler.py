@@ -154,16 +154,44 @@ async def _send_report(query, target_month: int, target_year: int):
         transfers_detail = report.get("переводы_детали", {})
 
         if all_cats:
-            lines.append("📂 *Расходы по категориям:*")
-            medals = ["🥇", "🥈", "🥉"]
-            sorted_cats = sorted(all_cats.items(), key=lambda x: x[1], reverse=True)
-            for i, (cat, amount) in enumerate(sorted_cats):
-                medal = medals[i] if i < len(medals) else "•"
-                pct = (amount / expenses * 100) if expenses > 0 else 0
-                lines.append(f"{medal} {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
-                if cat == "Переводы" and transfers_detail:
-                    for recv, sum_ in sorted(transfers_detail.items(), key=lambda x: x[1], reverse=True):
-                        lines.append(f"  └ {recv}: {sum_:,.0f} ₽")
+            lines.append("📂 *Расходы по категориям:*\n")
+
+            GROUPS = [
+                ("🏠 Жильё и платежи", ["Ипотека", "ипотека", "Коммуналка", "Интернет", "Связь", "Страховка", "Жилье"]),
+                ("🛒 Еда и быт",        ["Продукты", "Кафе", "Бытовая химия"]),
+                ("👤 Личное",           ["Красота", "Одежда", "Медицина", "Аптека", "Табак", "Алкоголь"]),
+                ("📚 Развитие",         ["Обучение", "Дети", "Животные"]),
+                ("🎮 Досуг",            ["Развлечения", "Подписки", "Подписки ИИ"]),
+                ("🚗 Прочее",           ["Транспорт", "Электротовары", "Прочее"]),
+                ("💸 Переводы",         ["Переводы"]),
+            ]
+
+            shown = set()
+            for group_name, group_cats in GROUPS:
+                group_lines = []
+                for cat in group_cats:
+                    # ищем без учёта регистра
+                    matched = next((k for k in all_cats if k.lower() == cat.lower()), None)
+                    if matched and matched not in shown:
+                        amount = all_cats[matched]
+                        pct = (amount / expenses * 100) if expenses > 0 else 0
+                        group_lines.append(f"  • {matched}: *{amount:,.0f} ₽* ({pct:.0f}%)")
+                        shown.add(matched)
+                        if matched.lower() == "переводы" and transfers_detail:
+                            for recv, sum_ in sorted(transfers_detail.items(), key=lambda x: x[1], reverse=True):
+                                group_lines.append(f"    └ {recv}: {sum_:,.0f} ₽")
+                if group_lines:
+                    lines.append(f"*{group_name}*")
+                    lines.extend(group_lines)
+                    lines.append("")  # пустая строка между группами
+
+            # Категории не попавшие ни в одну группу
+            leftover = [(k, v) for k, v in all_cats.items() if k not in shown]
+            if leftover:
+                lines.append("*📦 Остальное*")
+                for cat, amount in sorted(leftover, key=lambda x: x[1], reverse=True):
+                    pct = (amount / expenses * 100) if expenses > 0 else 0
+                    lines.append(f"  • {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
 
         # Прогноз только для текущего месяца
         if target_month == now.month and target_year == now.year:

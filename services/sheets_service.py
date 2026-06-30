@@ -59,6 +59,11 @@ FAMILY_SEARCH = {
 }
 
 
+def normalize_yo(text: str) -> str:
+    """Заменяет ё→е для единообразного поиска."""
+    return text.replace("ё", "е").replace("Ё", "Е")
+
+
 def now_ufa() -> datetime:
     return datetime.now(tz=UFA_TZ)
 
@@ -524,7 +529,7 @@ def smart_query(query_text: str) -> dict:
         if not ops_rows or len(ops_rows) <= 1:
             return {"ответ": "В таблице пока нет операций."}
 
-        raw_query = query_text.lower()
+        raw_query = normalize_yo(query_text.lower())
         for char in [".", ",", "?", "!", "-", "/"]:
             raw_query = raw_query.replace(char, " ")
 
@@ -541,11 +546,11 @@ def smart_query(query_text: str) -> dict:
                 target_month = val
                 break
 
-        # Определяем кого ищем из семьи
+        # Определяем кого ищем из семьи (ё→е нормализовано)
         target_person = None
         target_person_full = None
         for key, full_name in FAMILY_SEARCH.items():
-            if key in raw_query:
+            if normalize_yo(key) in raw_query:
                 target_person = key
                 target_person_full = full_name
                 break
