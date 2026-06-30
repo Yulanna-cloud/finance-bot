@@ -452,18 +452,36 @@ def fix_categories_in_sheet() -> dict:
         ic_desc = find_col(["описани", "товар"], 13)
         ic_shop = find_col(["магазин"], 12)
 
+        ic_recv = find_col(["получател"], 14)
+        ic_type = find_col(["тип"], 6)
+
         rules = [
             # (ключевые слова в описании/магазине, новая категория)
             (["клод", "claude", "anthropic", "openai", "chatgpt", "чатгпт", "нейросет"], "Подписки ИИ"),
-            (["мтс", "мобильн", "tele2", "теле2", "билайн", "мегафон"], "Связь"),
+            (["мтс", "tele2", "теле2", "билайн", "мегафон"], "Связь"),
+            # Аптека — лекарства, препараты
+            (["флуконазол", "флукон", "таблетк", "капс.", "капсул", "мг №",
+              "антибиотик", "анальгин", "аспирин", "ибупрофен", "парацетамол",
+              "витамин", "мазь", "бинт", "пластырь", "шприц", "микстур",
+              "антибактер", "мирмиспрей", "дезинфек", "антисептик"], "Аптека"),
         ]
 
         fixed = 0
         for row_idx, row in enumerate(all_values[1:], start=2):
-            desc = (row[ic_desc] if ic_desc < len(row) else "").lower()
-            shop = (row[ic_shop] if ic_shop < len(row) else "").lower()
-            cat  = row[ic_cat] if ic_cat < len(row) else ""
+            desc  = (row[ic_desc]  if ic_desc  < len(row) else "").lower()
+            shop  = (row[ic_shop]  if ic_shop  < len(row) else "").lower()
+            recv  = (row[ic_recv]  if ic_recv  < len(row) else "").lower()
+            rtype = (row[ic_type]  if ic_type  < len(row) else "").lower()
+            cat   = row[ic_cat]    if ic_cat   < len(row) else ""
             combined = desc + " " + shop
+
+            # Перевод конкретному человеку, попавший в Продукты → Переводы
+            if cat == "Продукты" and recv and rtype == "расход" and not any(
+                food in desc for food in ["продукт", "магазин", "пятер", "находк", "лента", "сырок", "хлеб", "молок"]
+            ):
+                sheet.update_cell(row_idx, ic_cat + 1, "Переводы")
+                fixed += 1
+                continue
 
             for keywords, new_cat in rules:
                 if any(kw in combined for kw in keywords) and cat != new_cat:

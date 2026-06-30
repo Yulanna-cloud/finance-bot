@@ -29,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
+        [KeyboardButton("🚀 Старт"),           KeyboardButton("❓ Помощь")],
         [KeyboardButton("📊 Отчёт за месяц"), KeyboardButton("🔍 Расшифровать категорию")],
         [KeyboardButton("🗑 Удалить запись"),  KeyboardButton("↩️ Восстановить")],
-        [KeyboardButton("📁 Архив"),           KeyboardButton("❓ Помощь")],
+        [KeyboardButton("📁 Архив")],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -60,7 +61,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Перехватывает нажатия кнопок главного меню."""
     text = update.message.text.strip()
-    if "Отчёт" in text:
+    if "Старт" in text:
+        await start(update, context)
+    elif "Отчёт" in text:
         await handle_report(update, context)
     elif "Расшифровать" in text:
         await update.message.reply_text(
@@ -87,7 +90,7 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Готово! Исправлено записей: {result['исправлено']}")
 
 
-MENU_BUTTON_TEXTS = ["📊 Отчёт", "🔍 Расшифровать", "🗑 Удалить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
+MENU_BUTTON_TEXTS = ["🚀 Старт", "📊 Отчёт", "🔍 Расшифровать", "🗑 Удалить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
 
 
 async def post_init(app):
