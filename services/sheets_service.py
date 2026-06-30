@@ -554,6 +554,10 @@ def smart_query(query_text: str) -> dict:
         income_words = ["пришло", "приход", "перевел", "перевела", "получил", "получила", "от "]
         is_income_search = any(w in raw_query for w in income_words)
 
+        # Поиск всех доходов или всех расходов
+        search_all_income  = any(w in raw_query for w in ["доход", "приходы", "все доходы", "расшифруй доход"])
+        search_all_expense = any(w in raw_query for w in ["все расходы", "расшифруй расход"])
+
         # Определяем режим расшифровки
         is_breakdown = any(w in raw_query for w in ["расшифруй", "детали", "подробно", "из чего", "что входит"])
 
@@ -626,17 +630,27 @@ def smart_query(query_text: str) -> dict:
             ]).lower()
 
             match = False
+            is_income_row = "доход" in row_type
+
+            # Поиск всех доходов
+            if search_all_income and not search_all_expense:
+                if is_income_row:
+                    match = True
+
+            # Поиск всех расходов
+            elif search_all_expense:
+                if not is_income_row:
+                    match = True
 
             # Поиск по имени человека
-            if target_person:
+            elif target_person:
                 if target_person in all_text:
-                    is_income_row = "доход" in row_type
                     if is_income_search and is_income_row:
                         match = True
                     elif not is_income_search:
                         match = True
 
-            # Поиск по категории (без имени человека)
+            # Поиск по категории
             elif cat_search:
                 if cat_search.lower() in row_cat.lower():
                     match = True
@@ -652,7 +666,10 @@ def smart_query(query_text: str) -> dict:
             except ValueError:
                 pass
 
-            label = row_recv or row_sender or row_desc or row_shop or row_cat
+            if is_income_row:
+                label = row_sender or row_desc or row_cat
+            else:
+                label = row_recv or row_desc or row_shop or row_cat
             found_lines.append(f"📅 {date} | 💰 {amount_str} ₽ | _{label}_")
 
         if not found_lines:
