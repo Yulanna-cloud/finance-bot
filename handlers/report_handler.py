@@ -152,6 +152,7 @@ async def _send_report(query, target_month: int, target_year: int):
         ]
 
         transfers_detail = report.get("переводы_детали", {})
+        clothing_detail  = report.get("одежда_детали", {})
 
         if all_cats:
             lines.append("📂 *Расходы по категориям:*\n")
@@ -186,6 +187,16 @@ async def _send_report(query, target_month: int, target_year: int):
                         if matched.lower() == "переводы" and transfers_detail:
                             for recv, sum_ in sorted(transfers_detail.items(), key=lambda x: x[1], reverse=True):
                                 group_lines.append(f"    └ {recv}: {sum_:,.0f} ₽")
+                        if matched.lower() == "одежда" and clothing_detail:
+                            # Показываем разбивку: мне / Рите / Диане
+                            NAME_SHORT = {
+                                "Маргарита П.": "Рите",
+                                "Диана Ш.":     "Диане",
+                                "Алексей П.":   "Лёше",
+                            }
+                            for person, sum_ in sorted(clothing_detail.items(), key=lambda x: x[1], reverse=True):
+                                label = NAME_SHORT.get(person, person)
+                                group_lines.append(f"    └ Одежда {label}: {sum_:,.0f} ₽")
                 if group_lines:
                     lines.append(f"*{group_name}*")
                     lines.extend(group_lines)

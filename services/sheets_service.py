@@ -311,7 +311,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                     ic_recv = find_col_index(["получател"], 14)
                     ic_desc = find_col_index(["описани", "товар"], 13)
                     recv_raw = (_get_cell(raw_row, ic_recv) or _get_cell(raw_row, ic_desc) or "?").lower()
-                    # Нормализуем имя через FAMILY_SEARCH
                     recv_norm = None
                     for key, full_name in FAMILY_SEARCH.items():
                         if key in recv_raw:
@@ -321,6 +320,19 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                     transfers_detail = expenses.setdefault("__transfers__", {})
                     transfers_detail[recv] = transfers_detail.get(recv, 0) + amount
 
+                # Для одежды собираем по получателю
+                if category == "Одежда":
+                    ic_recv = find_col_index(["получател"], 14)
+                    recv_raw = normalize_yo(_get_cell(raw_row, ic_recv).lower())
+                    recv_norm = None
+                    for key, full_name in FAMILY_SEARCH.items():
+                        if normalize_yo(key) in recv_raw:
+                            recv_norm = full_name
+                            break
+                    label = recv_norm or ("мне" if not recv_raw else recv_raw.title())
+                    clothing_detail = expenses.setdefault("__clothing__", {})
+                    clothing_detail[label] = clothing_detail.get(label, 0) + amount
+
         top_categories = sorted(
             [(k, v) for k, v in expenses.items() if not k.startswith("__")],
             key=lambda x: x[1], reverse=True
@@ -328,6 +340,7 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         logger.info(f"Отчёт за {target_month_name} {target_year}: доходы={income}, расходы={total_expense}, операций={count}")
 
         transfers_detail = expenses.pop("__transfers__", {})
+        clothing_detail  = expenses.pop("__clothing__", {})
         clean_expenses = {k: v for k, v in expenses.items() if not k.startswith("__")}
 
         return {
@@ -340,6 +353,7 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             "топ_категорий": top_categories,
             "все_категории": clean_expenses,
             "переводы_детали": transfers_detail,
+            "одежда_детали": clothing_detail,
         }
 
     except Exception as e:
@@ -485,6 +499,17 @@ def fix_categories_in_sheet() -> dict:
               "pedigree", "д/с.", "д/к.", "для собак", "для кошек", "вет."], "Животные"),
         ]
 
+        # Одежда для конкретного человека — ключевые слова и кому
+        CLOTHING_RULES = [
+            # (ключ. слова в описании, получатель, для кого)
+            (["трус", "носк", "майк", "пижам", "колгот", "детск одежд", "школьн"],
+             ["маргарит", "рит", "aton", "атон"],
+             "Маргарита П."),
+            (["трус", "носк", "майк", "пижам", "колгот"],
+             ["диан"],
+             "Диана Ш."),
+        ]
+
         fixed = 0
         for row_idx, row in enumerate(all_values[1:], start=2):
             desc  = (row[ic_desc]  if ic_desc  < len(row) else "").lower()
@@ -493,6 +518,19 @@ def fix_categories_in_sheet() -> dict:
             rtype = (row[ic_type]  if ic_type  < len(row) else "").lower()
             cat   = row[ic_cat]    if ic_cat   < len(row) else ""
             combined = desc + " " + shop
+
+            # Одежда детям — правим категорию и получателя
+            clothing_fixed = False
+            for cloth_words, person_keys, person_name in CLOTHING_RULES:
+                if any(w in desc for w in cloth_words) and any(k in (recv + shop) for k in person_keys):
+                    if cat != "Одежда" or recv != person_name.lower():
+                        sheet.update_cell(row_idx, ic_cat + 1, "Одежда")
+                        sheet.update_cell(row_idx, ic_recv + 1, person_name)
+                        fixed += 1
+                        clothing_fixed = True
+                        break
+            if clothing_fixed:
+                continue
 
             # Перевод конкретному человеку, попавший в Продукты → Переводы
             if cat == "Продукты" and recv and rtype == "расход" and not any(
