@@ -139,23 +139,77 @@ async def handle_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["plan_month"] = month
 
 
-async def handle_plan_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Перехватывает ввод дохода при планировании."""
-    if context.user_data.get("plan_step") != "await_income":
-        return False
+async def _show_edit_keyboard(query_or_msg, context, edit_msg=False):
+    """Показывает редактор плана — каждая категория кнопкой."""
+    plan = context.user_data.get("pending_plan", {})
+    cats = plan.get("категории", {})
+    total = sum(cats.values())
 
-    text = update.message.text.strip().replace(" ", "").replace(",", ".")
-    try:
-        income = float(text)
-    except ValueError:
-        await update.message.reply_text("Не понял сумму. Напиши просто число, например: 39000")
+    lines = ["✏️ *Редактор плана*\n",
+             "Нажми на категорию чтобы изменить сумму:\n"]
+    buttons = []
+    for cat, amt in cats.items():
+        lines.append(f"  • {cat}: *{amt:,.0f} ₽*")
+        buttons.append([
+            InlineKeyboardButton(f"✏️ {cat}: {amt:,.0f} ₽", callback_data=f"planedit_cat_{cat}"),
+            InlineKeyboardButton("🗑", callback_data=f"planedit_del_{cat}"),
+        ])
+
+    lines.append(f"\n💰 Итого: *{total:,.0f} ₽*")
+    buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data="planedit_add")])
+    buttons.append([InlineKeyboardButton("✅ Сохранить и записать", callback_data="planedit_save")])
+    buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="plan_cancel")])
+
+    text = "\n".join(lines)
+    markup = InlineKeyboardMarkup(buttons)
+
+    if hasattr(query_or_msg, "edit_message_text"):
+        await query_or_msg.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await query_or_msg.reply_text(text, parse_mode="Markdown", reply_markup=markup)
+
+
+async def handle_plan_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Перехватывает ввод при планировании (доход или новая сумма категории)."""
+    step = context.user_data.get("plan_step")
+
+    # Ввод дохода
+    if step == "await_income":
+        text = update.message.text.strip().replace(" ", "").replace(",", ".")
+        try:
+            income = float(text)
+        except ValueError:
+            await update.message.reply_text("Не понял сумму. Напиши просто число, например: 39000")
+            return True
+        month = context.user_data.pop("plan_month", now_ufa().month)
+        context.user_data.pop("plan_step", None)
+        await _show_plan(update.message, context, income, month)
         return True
 
-    month = context.user_data.get("plan_month", now_ufa().month)
-    context.user_data.pop("plan_step", None)
-    context.user_data.pop("plan_month", None)
-    await _show_plan(update.message, context, income, month)
-    return True
+    # Ввод новой суммы для категории в редакторе
+    if step == "await_edit_amount":
+        text = update.message.text.strip().replace(" ", "").replace(",", ".")
+        try:
+            amount = float(text)
+        except ValueError:
+            await update.message.reply_text("Только цифры, например: 8000")
+            return True
+
+        cat = context.user_data.pop("plan_edit_cat", None)
+        context.user_data.pop("plan_step", None)
+        if cat:
+            plan = context.user_data.setdefault("pending_plan", {})
+            plan.setdefault("категории", {})[cat] = amount
+
+        # Показываем обновлённый редактор
+        await update.message.reply_text(
+            f"✅ *{cat}* → *{amount:,.0f} ₽*",
+            parse_mode="Markdown"
+        )
+        await _show_edit_keyboard(update.message, context)
+        return True
+
+    return False
 
 
 async def _show_plan(msg, context, income: float, month: int):
@@ -188,19 +242,79 @@ async def handle_plan_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not plan:
             await query.edit_message_text("Что-то пошло не так — попробуй /plan заново.")
             return
-        cats = plan["категории"]
-        lines = ["✏️ *Изменить лимиты*\n",
-                 "Напиши боту в формате:\n_бюджет Продукты 8000_\n",
-                 "Текущий план:"]
-        for cat, amt in cats.items():
-            lines.append(f"  • {cat}: {amt:,.0f} ₽")
-        lines.append("\nПосле правок нажми 💼 *Бюджет* чтобы проверить,")
-        lines.append("или запусти /plan заново с другой суммой дохода.")
-        # Сначала запишем план как есть, потом пользователь скорректирует
-        for cat, limit in cats.items():
+        await _show_edit_keyboard(query, context)
+        return
+
+    # Нажала на конкретную категорию в редакторе
+    if data.startswith("planedit_cat_"):
+        cat = data.replace("planedit_cat_", "")
+        plan = context.user_data.get("pending_plan", {})
+        cur = plan.get("категории", {}).get(cat, 0)
+        context.user_data["plan_edit_cat"] = cat
+        context.user_data["plan_step"] = "await_edit_amount"
+        await query.edit_message_text(
+            f"✏️ *{cat}*\nСейчас: *{cur:,.0f} ₽*\n\nВведи новую сумму (только цифры):",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Добавить новую категорию
+    if data == "planedit_add":
+        context.user_data["plan_step"] = "await_new_cat"
+        # Показываем список доступных категорий кнопками
+        all_cats = CATEGORIES
+        plan = context.user_data.get("pending_plan", {})
+        existing = set(plan.get("категории", {}).keys())
+        available = [c for c in all_cats if c not in existing]
+        rows = [available[i:i+3] for i in range(0, len(available), 3)]
+        buttons = [
+            [InlineKeyboardButton(c, callback_data=f"planedit_newcat_{c}") for c in row]
+            for row in rows
+        ]
+        buttons.append([InlineKeyboardButton("◀ Назад", callback_data="planedit_back")])
+        await query.edit_message_text(
+            "Выбери категорию для добавления в план:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("planedit_newcat_"):
+        cat = data.replace("planedit_newcat_", "")
+        context.user_data["plan_edit_cat"] = cat
+        context.user_data["plan_step"] = "await_edit_amount"
+        await query.edit_message_text(
+            f"✏️ Добавляю *{cat}*\nВведи лимит (только цифры):",
+            parse_mode="Markdown"
+        )
+        return
+
+    if data == "planedit_back":
+        await _show_edit_keyboard(query, context)
+        return
+
+    # Удалить категорию из плана
+    if data.startswith("planedit_del_"):
+        cat = data.replace("planedit_del_", "")
+        plan = context.user_data.get("pending_plan", {})
+        plan.get("категории", {}).pop(cat, None)
+        await _show_edit_keyboard(query, context)
+        return
+
+    # Сохранить отредактированный план
+    if data == "planedit_save":
+        plan = context.user_data.pop("pending_plan", None)
+        month = context.user_data.pop("pending_plan_month", now_ufa().month)
+        if not plan:
+            await query.edit_message_text("Что-то пошло не так — попробуй /plan заново.")
+            return
+        for cat, limit in plan.get("категории", {}).items():
             if limit > 0:
                 set_budget(cat, limit)
-        await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+        month_name = MONTH_NAMES_RU[month]
+        await query.edit_message_text(
+            f"✅ *Бюджет на {month_name} установлен!*\n\nГерман будет следить 👀",
+            parse_mode="Markdown"
+        )
         return
 
     plan = context.user_data.pop("pending_plan", None)
