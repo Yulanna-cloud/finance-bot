@@ -138,7 +138,7 @@ async def _send_report(query, target_month: int, target_year: int):
         expenses = report["расходы"]
         balance = report["остаток"]
         count = report["количество"]
-        top = report["топ_категорий"]
+        all_cats = report.get("все_категории", {})
 
         balance_emoji = "✅" if balance >= 0 else "🔴"
         balance_sign = "+" if balance >= 0 else ""
@@ -151,10 +151,11 @@ async def _send_report(query, target_month: int, target_year: int):
             f"🔢 Операций: {count}\n",
         ]
 
-        if top:
-            lines.append("📂 *Топ расходов:*")
-            medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-            for i, (cat, amount) in enumerate(top):
+        if all_cats:
+            lines.append("📂 *Расходы по категориям:*")
+            medals = ["🥇", "🥈", "🥉"]
+            sorted_cats = sorted(all_cats.items(), key=lambda x: x[1], reverse=True)
+            for i, (cat, amount) in enumerate(sorted_cats):
                 medal = medals[i] if i < len(medals) else "•"
                 pct = (amount / expenses * 100) if expenses > 0 else 0
                 lines.append(f"{medal} {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
