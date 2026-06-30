@@ -40,15 +40,23 @@ QUERY_KEYWORDS = [
 ]
 
 
+STRONG_QUERY_WORDS = [
+    "сколько", "покажи", "найди", "расшифруй",
+    "детали", "подробно", "из чего", "что входит",
+]
+
 def is_query(text: str) -> bool:
     t = text.lower()
-    # Шаг 1: если есть маркер операции — точно НЕ запрос
-    if any(m in t for m in OPERATION_MARKERS):
-        return False
-    # Шаг 2: явный вопрос
+    # Шаг 1: сильные вопросительные слова — всегда запрос, даже если есть "перевела"
+    if any(k in t for k in STRONG_QUERY_WORDS):
+        return True
+    # Шаг 2: вопросительный знак
     if "?" in t:
         return True
-    # Шаг 3: ключевые слова поиска
+    # Шаг 3: если есть маркер операции — точно НЕ запрос
+    if any(m in t for m in OPERATION_MARKERS):
+        return False
+    # Шаг 4: остальные поисковые слова
     return any(k in t for k in QUERY_KEYWORDS)
 
 
