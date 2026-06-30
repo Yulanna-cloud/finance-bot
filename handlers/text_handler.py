@@ -61,7 +61,12 @@ def is_query(text: str) -> bool:
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from handlers.edit_handler import handle_edit_text
     text = update.message.text.strip()
+
+    # Если ждём ввод для редактирования — отдаём туда
+    if await handle_edit_text(update, context):
+        return
 
     # Поисковый запрос
     if is_query(text):
