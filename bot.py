@@ -18,6 +18,7 @@ from handlers.report_handler import handle_report, handle_report_callback
 from handlers.archive_handler import handle_archive, handle_smart_query
 from handlers.year_handler import handle_year, handle_analiz
 from handlers.edit_handler import handle_edit, handle_edit_callback, handle_edit_text
+from handlers.budget_handler import handle_budget
 from handlers.delete_handler import (
     handle_delete, handle_delete_callback,
     handle_restore, handle_restore_callback
@@ -35,8 +36,9 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton("🚀 Старт"),           KeyboardButton("❓ Помощь")],
         [KeyboardButton("📊 Отчёт за месяц"), KeyboardButton("📅 Итоги года")],
         [KeyboardButton("🔍 Расшифровать категорию"), KeyboardButton("🧠 Анализ трат")],
-        [KeyboardButton("🗑 Удалить запись"),  KeyboardButton("✏️ Изменить запись")],
-        [KeyboardButton("↩️ Восстановить"),   KeyboardButton("📁 Архив")],
+        [KeyboardButton("💼 Бюджет"),          KeyboardButton("🗑 Удалить запись")],
+        [KeyboardButton("✏️ Изменить запись"), KeyboardButton("↩️ Восстановить")],
+        [KeyboardButton("📁 Архив")],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -80,6 +82,8 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "_расшифруй обучение_\n_расшифруй переводы_\n_детали продукты_",
             parse_mode="Markdown"
         )
+    elif "Бюджет" in text:
+        await handle_budget(update, context)
     elif "Удалить" in text:
         await handle_delete(update, context)
     elif "Изменить" in text:
@@ -105,7 +109,7 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Готово! Поправил {n} записей — теперь всё по полочкам 📂")
 
 
-MENU_BUTTON_TEXTS = ["🚀 Старт", "📊 Отчёт", "📅 Итоги", "🧠 Анализ", "🔍 Расшифровать", "🗑 Удалить", "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
+MENU_BUTTON_TEXTS = ["🚀 Старт", "📊 Отчёт", "📅 Итоги", "🧠 Анализ", "💼 Бюджет", "🔍 Расшифровать", "🗑 Удалить", "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
 
 
 async def monthly_reminder(context):
@@ -133,6 +137,7 @@ async def post_init(app):
         BotCommand("restore", "↩️ Восстановить удалённое"),
         BotCommand("archive", "📁 Архивировать прошлый месяц"),
         BotCommand("edit",    "✏️ Изменить запись"),
+        BotCommand("budget",  "💼 Бюджет по категориям"),
         BotCommand("fix",     "🔧 Исправить категории в таблице"),
         BotCommand("pomosh",  "❓ Помощь"),
     ])
@@ -167,6 +172,7 @@ def main():
     app.add_handler(CommandHandler("year", handle_year))
     app.add_handler(CommandHandler("analiz", handle_analiz))
     app.add_handler(CommandHandler("edit", handle_edit))
+    app.add_handler(CommandHandler("budget", handle_budget))
 
     app.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
     app.add_handler(CallbackQueryHandler(handle_edit_callback, pattern="^edit_"))

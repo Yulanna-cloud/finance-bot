@@ -1,7 +1,8 @@
 import logging
+import re
 from telegram import Update
 from telegram.ext import ContextTypes
-from services.sheets_service import write_operation, write_operations_batch, smart_query
+from services.sheets_service import write_operation, write_operations_batch, smart_query, get_monthly_report, now_ufa
 from services.gemini_service import classify_text, classify_text_multi, is_multi_line_input
 
 logger = logging.getLogger(__name__)
@@ -62,10 +63,41 @@ def is_query(text: str) -> bool:
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from handlers.edit_handler import handle_edit_text
+    from handlers.budget_handler import (
+        handle_budget, handle_budget_set, handle_budget_delete,
+        get_budgets, check_budget_alert, CATEGORIES
+    )
     text = update.message.text.strip()
 
     # Если ждём ввод для редактирования — отдаём туда
     if await handle_edit_text(update, context):
+        return
+
+    t_lower = text.lower()
+
+    # Команда: бюджет Продукты 15000
+    m = re.match(r"^бюджет\s+(.+?)\s+([\d\s.,]+)$", t_lower)
+    if m:
+        cat_raw = m.group(1).strip().title()
+        cat_match = next((c for c in CATEGORIES if c.lower() == cat_raw.lower()), cat_raw)
+        try:
+            limit = float(m.group(2).replace(" ", "").replace(",", "."))
+            await handle_budget_set(update, context, cat_match, limit)
+        except ValueError:
+            await update.message.reply_text("Не понял сумму. Напиши: бюджет Продукты 15000")
+        return
+
+    # Команда: удалить бюджет Продукты
+    m2 = re.match(r"^удалить бюджет\s+(.+)$", t_lower)
+    if m2:
+        cat_raw = m2.group(1).strip().title()
+        cat_match = next((c for c in CATEGORIES if c.lower() == cat_raw.lower()), cat_raw)
+        await handle_budget_delete(update, context, cat_match)
+        return
+
+    # Просмотр бюджетов
+    if t_lower in ("бюджет", "бюджеты", "мой бюджет"):
+        await handle_budget(update, context)
         return
 
     # Поисковый запрос
@@ -159,5 +191,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data.get("отправитель"):
             msg += f"\n👤 От: {data['отправитель']}"
         await update.message.reply_text(msg, parse_mode="Markdown")
+
+        # Проверяем бюджет для расходов
+        if тип == "расход":
+            cat = data.get("категория", "")
+            budgets = get_budgets()
+            if cat in budgets:
+                now = now_ufa()
+                report = get_monthly_report(month=now.month, year=now.year)
+                spent = report.get("все_категории", {}).get(cat, 0)
+                alert = check_budget_alert(cat, spent, budgets[cat])
+                if alert:
+                    await update.message.reply_text(alert, parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ Ошибка записи.")
