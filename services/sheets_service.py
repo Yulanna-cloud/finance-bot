@@ -642,8 +642,11 @@ def smart_query(query_text: str) -> dict:
                 break
 
         # Определяем тип поиска
-        income_words = ["пришло", "приход", "перевел", "перевела", "получил", "получила", "от "]
-        is_income_search = any(w in raw_query for w in income_words)
+        # "перевела/перевел" — доход только если есть "от" (мне перевели), иначе расход (я перевела Диане)
+        has_transfer = any(w in raw_query for w in ["перевел", "перевела"])
+        transfer_is_income = has_transfer and " от " in raw_query
+        income_words = ["пришло", "приход", "получил", "получила", "от "]
+        is_income_search = any(w in raw_query for w in income_words) or transfer_is_income
 
         # Поиск всех доходов или всех расходов
         search_all_income  = any(w in raw_query for w in ["доход", "приходы", "все доходы", "расшифруй доход"])
