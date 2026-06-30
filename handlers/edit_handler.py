@@ -58,12 +58,23 @@ def _get_recent_rows(n=10):
     return list(reversed(result)), sheet  # свежие сверху
 
 
+def _build_edit_buttons(rows, offset=0, page_size=10):
+    buttons = []
+    for r in rows:
+        emoji = "💰" if r["type"] == "доход" else "💸"
+        label = f"{r['date']} | {emoji} {r['amount']} ₽ | {r['cat']}"
+        if r["desc"]:
+            label += f" — {r['desc'][:18]}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"edit_pick_{r['op_id']}")])
+    return buttons
+
+
 async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает последние записи для выбора."""
     msg = update.message
     await msg.reply_text("✏️ Герман открывает последние записи...")
     try:
-        rows, _ = _get_recent_rows(10)
+        rows, _ = _get_recent_rows(30)
     except Exception as e:
         await msg.reply_text(f"❌ Не удалось прочитать таблицу: {e}")
         return
@@ -72,19 +83,30 @@ async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("📭 Записей пока нет.")
         return
 
-    buttons = []
-    for r in rows:
-        emoji = "💰" if r["type"] == "доход" else "💸"
-        label = f"{r['date']} | {emoji} {r['amount']} ₽ | {r['cat']}"
-        if r["desc"]:
-            label += f" — {r['desc'][:20]}"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"edit_pick_{r['op_id']}")])
+    context.user_data["edit_all_rows"] = rows
+    await _show_edit_page(update.message, context, rows, page=0)
 
+
+async def _show_edit_page(msg_or_query, context, rows, page=0):
+    PAGE = 10
+    start = page * PAGE
+    chunk = rows[start:start + PAGE]
+    buttons = _build_edit_buttons(chunk)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀ Назад", callback_data=f"edit_page_{page-1}"))
+    if start + PAGE < len(rows):
+        nav.append(InlineKeyboardButton("Ещё ▶", callback_data=f"edit_page_{page+1}"))
+    if nav:
+        buttons.append(nav)
     buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="edit_cancel")])
-    await msg.reply_text(
-        "Выбери запись для редактирования:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    total = len(rows)
+    text = f"Выбери запись ({start+1}–{min(start+PAGE, total)} из {total}):"
+    markup = InlineKeyboardMarkup(buttons)
+    if hasattr(msg_or_query, "edit_message_text"):
+        await msg_or_query.edit_message_text(text, reply_markup=markup)
+    else:
+        await msg_or_query.reply_text(text, reply_markup=markup)
 
 
 async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -92,6 +114,15 @@ async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     data = query.data
+
+    if data.startswith("edit_page_"):
+        page = int(data.replace("edit_page_", ""))
+        rows = context.user_data.get("edit_all_rows", [])
+        if not rows:
+            await query.edit_message_text("Список устарел — нажми ✏️ Изменить запись заново.")
+            return
+        await _show_edit_page(query, context, rows, page=page)
+        return
 
     if data == "edit_cancel":
         context.user_data.pop("edit_state", None)
