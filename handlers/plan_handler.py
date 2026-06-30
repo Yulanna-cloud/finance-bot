@@ -102,31 +102,41 @@ def format_plan(plan: dict, month: int) -> str:
     return "\n".join(lines)
 
 
+def _target_month() -> tuple[int, int]:
+    """Возвращает (месяц, год) для планирования: если 25+, то следующий месяц."""
+    now = now_ufa()
+    if now.day >= 25:
+        if now.month == 12:
+            return 1, now.year + 1
+        return now.month + 1, now.year
+    return now.month, now.year
+
+
 async def handle_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запускает планирование бюджета."""
-    now = now_ufa()
     msg = update.message
+    month, year = _target_month()
 
     # Если в context.args есть доход — сразу считаем
     if context.args:
         try:
             income = float(context.args[0].replace(",", "."))
-            await _show_plan(msg, context, income, now.month)
+            await _show_plan(msg, context, income, month)
             return
         except ValueError:
             pass
 
     # Иначе спрашиваем доход
-    month_name = MONTH_NAMES_RU[now.month]
+    month_name = MONTH_NAMES_RU[month]
     await msg.reply_text(
-        f"📋 *Планируем бюджет на {month_name}!*\n\n"
-        f"Фиксированные расходы у нас ~*{FIXED_TOTAL:,.0f} ₽*\n"
+        f"📋 *Планируем бюджет на {month_name} {year}!*\n\n"
+        f"Фиксированные расходы: ~*{FIXED_TOTAL:,.0f} ₽*\n"
         f"Хотим отложить: *{SAVINGS_GOAL:,.0f} ₽*\n\n"
-        "Напиши ожидаемый доход в этом месяце (или примерную сумму):",
+        "Напиши ожидаемый доход:",
         parse_mode="Markdown"
     )
     context.user_data["plan_step"] = "await_income"
-    context.user_data["plan_month"] = now.month
+    context.user_data["plan_month"] = month
 
 
 async def handle_plan_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -156,7 +166,7 @@ async def _show_plan(msg, context, income: float, month: int):
     text = format_plan(plan, month)
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Записать лимиты", callback_data="plan_confirm")],
-        [InlineKeyboardButton("💾 Записать и уменьшить сбережения", callback_data="plan_confirm_nosave")],
+        [InlineKeyboardButton("✏️ Изменить лимиты", callback_data="plan_edit")],
         [InlineKeyboardButton("❌ Отмена", callback_data="plan_cancel")],
     ])
     await msg.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
@@ -169,7 +179,28 @@ async def handle_plan_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if data == "plan_cancel":
         context.user_data.pop("pending_plan", None)
+        context.user_data.pop("pending_plan_month", None)
         await query.edit_message_text("Планирование отменено — лимиты не изменились.")
+        return
+
+    if data == "plan_edit":
+        plan = context.user_data.get("pending_plan")
+        if not plan:
+            await query.edit_message_text("Что-то пошло не так — попробуй /plan заново.")
+            return
+        cats = plan["категории"]
+        lines = ["✏️ *Изменить лимиты*\n",
+                 "Напиши боту в формате:\n_бюджет Продукты 8000_\n",
+                 "Текущий план:"]
+        for cat, amt in cats.items():
+            lines.append(f"  • {cat}: {amt:,.0f} ₽")
+        lines.append("\nПосле правок нажми 💼 *Бюджет* чтобы проверить,")
+        lines.append("или запусти /plan заново с другой суммой дохода.")
+        # Сначала запишем план как есть, потом пользователь скорректирует
+        for cat, limit in cats.items():
+            if limit > 0:
+                set_budget(cat, limit)
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
         return
 
     plan = context.user_data.pop("pending_plan", None)
@@ -180,14 +211,6 @@ async def handle_plan_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     cats = plan["категории"]
-
-    # Если доход не покрывает сбережения — пересчитываем без них
-    if data == "plan_confirm_nosave":
-        income = plan["доход"]
-        variable = income - FIXED_TOTAL
-        split = AUGUST_SPLIT if month == 8 else VARIABLE_SPLIT
-        cats = {cat: round(variable * pct / 100 / 100) * 100 for cat, pct in split.items()}
-
     errors = []
     for cat, limit in cats.items():
         if limit > 0:
