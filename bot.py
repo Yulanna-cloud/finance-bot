@@ -3,6 +3,7 @@
 """
 import os
 import logging
+from datetime import time as datetime_time
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -15,6 +16,7 @@ from services.sheets_service import fix_categories_in_sheet
 from handlers.file_handler import handle_file
 from handlers.report_handler import handle_report, handle_report_callback
 from handlers.archive_handler import handle_archive, handle_smart_query
+from handlers.year_handler import handle_year, handle_analiz
 from handlers.delete_handler import (
     handle_delete, handle_delete_callback,
     handle_restore, handle_restore_callback
@@ -30,7 +32,8 @@ logger = logging.getLogger(__name__)
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("🚀 Старт"),           KeyboardButton("❓ Помощь")],
-        [KeyboardButton("📊 Отчёт за месяц"), KeyboardButton("🔍 Расшифровать категорию")],
+        [KeyboardButton("📊 Отчёт за месяц"), KeyboardButton("📅 Итоги года")],
+        [KeyboardButton("🔍 Расшифровать категорию"), KeyboardButton("🧠 Анализ трат")],
         [KeyboardButton("🗑 Удалить запись"),  KeyboardButton("↩️ Восстановить")],
         [KeyboardButton("📁 Архив")],
     ],
@@ -66,6 +69,10 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await start(update, context)
     elif "Отчёт" in text:
         await handle_report(update, context)
+    elif "Итоги года" in text:
+        await handle_year(update, context)
+    elif "Анализ трат" in text:
+        await handle_analiz(update, context)
     elif "Расшифровать" in text:
         await update.message.reply_text(
             "Напиши название категории, например:\n"
@@ -95,20 +102,47 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Готово! Поправил {n} записей — теперь всё по полочкам 📂")
 
 
-MENU_BUTTON_TEXTS = ["🚀 Старт", "📊 Отчёт", "🔍 Расшифровать", "🗑 Удалить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
+MENU_BUTTON_TEXTS = ["🚀 Старт", "📊 Отчёт", "📅 Итоги", "🧠 Анализ", "🔍 Расшифровать", "🗑 Удалить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
+
+
+async def monthly_reminder(context):
+    """Напоминание в конце месяца."""
+    chat_id = context.job.data
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "📅 Привет! Герман напоминает — месяц заканчивается.\n"
+            "Самое время взглянуть на отчёт и понять, куда утекли деньги 😄\n\n"
+            "Нажми 📊 *Отчёт за месяц* или /otchet"
+        ),
+        parse_mode="Markdown"
+    )
 
 
 async def post_init(app):
-    """Регистрирует список команд в Telegram (меню через '/')."""
+    """Регистрирует список команд и планировщик напоминаний."""
     await app.bot.set_my_commands([
         BotCommand("start",   "🚀 Запустить бота / главное меню"),
         BotCommand("otchet",  "📊 Отчёт за месяц"),
+        BotCommand("year",    "📅 Итоги года"),
+        BotCommand("analiz",  "🧠 Анализ трат"),
         BotCommand("delete",  "🗑 Удалить ошибочную запись"),
         BotCommand("restore", "↩️ Восстановить удалённое"),
         BotCommand("archive", "📁 Архивировать прошлый месяц"),
         BotCommand("fix",     "🔧 Исправить категории в таблице"),
         BotCommand("pomosh",  "❓ Помощь"),
     ])
+
+    # Напоминание 28-го числа каждого месяца в 18:00 по Уфе (13:00 UTC)
+    chat_id = os.environ.get("OWNER_CHAT_ID")
+    if chat_id:
+        app.job_queue.run_monthly(
+            monthly_reminder,
+            when=datetime_time(hour=13, minute=0),
+            day=28,
+            data=int(chat_id),
+            name="monthly_reminder"
+        )
 
 
 def main():
@@ -126,6 +160,8 @@ def main():
     app.add_handler(CommandHandler("delete", handle_delete))
     app.add_handler(CommandHandler("restore", handle_restore))
     app.add_handler(CommandHandler("fix", fix_command))
+    app.add_handler(CommandHandler("year", handle_year))
+    app.add_handler(CommandHandler("analiz", handle_analiz))
 
     app.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
     app.add_handler(CallbackQueryHandler(handle_report_callback, pattern="^report_"))

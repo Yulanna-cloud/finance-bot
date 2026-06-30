@@ -5,7 +5,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from services.sheets_service import get_monthly_report, now_ufa, MONTH_NAMES_RU
+from services.sheets_service import get_monthly_report, get_year_summary, now_ufa, MONTH_NAMES_RU
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ async def _send_report(query, target_month: int, target_year: int):
                     pct = (amount / expenses * 100) if expenses > 0 else 0
                     lines.append(f"  • {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
 
-        # Прогноз только для текущего месяца
+        # Прогноз + сравнение — только для текущего месяца
         if target_month == now.month and target_year == now.year:
             if expenses > 0 and count > 0:
                 days_passed = now.day
@@ -218,6 +218,23 @@ async def _send_report(query, target_month: int, target_year: int):
                 forecast = daily_avg * 30
                 lines.append(f"\n🔮 *Прогноз на месяц:* {forecast:,.0f} ₽")
                 lines.append(f"_(в среднем {daily_avg:,.0f} ₽/день)_")
+
+            # Сравнение с прошлым месяцем
+            prev_m = target_month - 1 if target_month > 1 else 12
+            prev_y = target_year if target_month > 1 else target_year - 1
+            prev = get_monthly_report(month=prev_m, year=prev_y)
+            if "ошибка" not in prev and prev["количество"] > 0:
+                prev_name = MONTH_NAMES_RU[prev_m]
+                diff = expenses - prev["расходы"]
+                diff_sign = "+" if diff >= 0 else "−"
+                diff_emoji = "📈" if diff > 0 else "📉"
+                lines.append(f"\n{diff_emoji} *Против {prev_name}:* {diff_sign}{abs(diff):,.0f} ₽")
+                if diff > 0:
+                    lines.append(f"_Потратила больше, чем в прошлом месяце. Герман молчит, но заметил 😏_")
+                elif diff < 0:
+                    lines.append(f"_Потратила меньше! Герман доволен 👍_")
+                else:
+                    lines.append(f"_Копейка в копейку с прошлым месяцем. Редкость!_")
 
         await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
 

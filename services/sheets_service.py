@@ -361,6 +361,41 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         return {"ошибка": str(e)}
 
 
+def get_year_summary(year: Optional[int] = None) -> dict:
+    """Итоги года: доходы, расходы, остаток по каждому месяцу."""
+    try:
+        now = now_ufa()
+        target_year = year or now.year
+        months_data = []
+        for m in range(1, 13):
+            if target_year == now.year and m > now.month:
+                break
+            rep = get_monthly_report(month=m, year=target_year)
+            if "ошибка" in rep:
+                continue
+            if rep["количество"] == 0:
+                continue
+            months_data.append({
+                "месяц": MONTH_NAMES_RU[m],
+                "номер": m,
+                "доходы": rep["доходы"],
+                "расходы": rep["расходы"],
+                "остаток": rep["остаток"],
+            })
+        total_income   = sum(m["доходы"]  for m in months_data)
+        total_expense  = sum(m["расходы"] for m in months_data)
+        return {
+            "год": target_year,
+            "месяцы": months_data,
+            "итого_доходы": total_income,
+            "итого_расходы": total_expense,
+            "итого_остаток": total_income - total_expense,
+        }
+    except Exception as e:
+        logger.error(f"Ошибка get_year_summary: {e}")
+        return {"ошибка": str(e)}
+
+
 def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> dict:
     try:
         now = now_ufa()
