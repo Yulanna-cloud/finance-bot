@@ -424,35 +424,96 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         total = sum(op["сумма"] for op in operations)
-        ok, errors = write_operations_batch(operations, source="чек_фото")
-        await _reply_receipt_result(update, operations, store_from_groq, total, ok, instruction)
+        await _ask_confirm_receipt(update, context, operations, store_from_groq, total)
 
     except Exception as e:
         logger.error(f"Ошибка handle_photo: {e}", exc_info=True)
         await update.message.reply_text("❌ Что-то пошло не так при обработке фото.")
 
 
-async def _reply_receipt_result(update, operations, store, total, ok, instruction):
+CATEGORY_EMOJI = {
+    "Продукты": "🛒",
+    "Аптека": "💊",
+    "Бытовая химия": "🧹",
+    "Табак": "🚬",
+    "Алкоголь": "🍷",
+    "Красота": "💄",
+    "Животные": "🐾",
+    "Кафе": "☕",
+    "Прочее": "📦",
+}
+
+
+async def _ask_confirm_receipt(update, context, operations, store, total):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    chat_id = update.effective_chat.id
+    context.chat_data[f"pending_receipt_{chat_id}"] = {
+        "operations": operations,
+        "store": store,
+        "total": total,
+    }
+
     lines = []
     for op in operations[:15]:
-        lines.append(f"• {op['описание'] or op['категория']} — {op['сумма']:,.0f} ₽")
+        emoji = CATEGORY_EMOJI.get(op["категория"], "📦")
+        lines.append(f"• {op['описание'] or op['категория']} — {op['сумма']:,.0f} ₽  {emoji} {op['категория']}")
     if len(operations) > 15:
         lines.append(f"_...и ещё {len(operations) - 15} позиций_")
 
     store_str = f"🏪 *{store}*\n\n" if store else ""
-    note = ""
-    if instruction and instruction.get("использовать_подпись"):
-        cat = instruction.get("категория", "")
-        recv = instruction.get("получатель", "")
-        subcat = instruction.get("подкатегория", "")
-        note_parts = [p for p in [cat, subcat, recv] if p]
-        note = f"\n📂 {' / '.join(note_parts)}" if note_parts else ""
-
-    await update.message.reply_text(
-        f"🧾 Чек записан!\n\n{store_str}"
+    text = (
+        f"🧾 Проверь чек перед записью:\n\n{store_str}"
         + "\n".join(lines)
-        + f"\n\n💰 Итого: *{total:,.0f} ₽*"
-        + note
-        + f"\n📥 Записано: {ok} позиций",
-        parse_mode="Markdown"
+        + f"\n\n💰 Итого: *{total:,.0f} ₽*\n\n"
+        "Всё верно?"
     )
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Записать", callback_data=f"receipt_confirm_{chat_id}"),
+        InlineKeyboardButton("❌ Отменить", callback_data=f"receipt_cancel_{chat_id}"),
+    ]])
+
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def handle_receipt_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    chat_id = update.effective_chat.id
+    key = f"pending_receipt_{chat_id}"
+
+    if data.startswith("receipt_cancel_"):
+        context.chat_data.pop(key, None)
+        await query.edit_message_text("❌ Чек отменён. Ничего не записано.")
+        return
+
+    if data.startswith("receipt_confirm_"):
+        pending = context.chat_data.pop(key, None)
+        if not pending:
+            await query.edit_message_text("⚠️ Данные чека не найдены. Отправь фото ещё раз.")
+            return
+
+        operations = pending["operations"]
+        store = pending["store"]
+        total = pending["total"]
+
+        ok, errors = write_operations_batch(operations, source="чек_фото")
+
+        lines = []
+        for op in operations[:15]:
+            emoji = CATEGORY_EMOJI.get(op["категория"], "📦")
+            lines.append(f"• {op['описание'] or op['категория']} — {op['сумма']:,.0f} ₽  {emoji}")
+        if len(operations) > 15:
+            lines.append(f"_...и ещё {len(operations) - 15} позиций_")
+
+        store_str = f"🏪 *{store}*\n\n" if store else ""
+        await query.edit_message_text(
+            f"🧾 Чек записан!\n\n{store_str}"
+            + "\n".join(lines)
+            + f"\n\n💰 Итого: *{total:,.0f} ₽*"
+            + f"\n📥 Записано: {ok} позиций",
+            parse_mode="Markdown"
+        )

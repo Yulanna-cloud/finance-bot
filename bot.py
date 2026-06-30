@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 from handlers.text_handler import handle_text
 from handlers.voice_handler import handle_voice
-from handlers.photo_handler import handle_photo
+from handlers.photo_handler import handle_photo, handle_receipt_callback
 from handlers.file_handler import handle_file
 from handlers.report_handler import handle_report, handle_report_callback
 from handlers.archive_handler import handle_archive, handle_smart_query
@@ -66,6 +66,7 @@ def main():
     app.add_handler(CommandHandler("delete", handle_delete))
     app.add_handler(CommandHandler("restore", handle_restore))
 
+    app.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
     app.add_handler(CallbackQueryHandler(handle_report_callback, pattern="^report_"))
     app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern="^del_"))
     app.add_handler(CallbackQueryHandler(handle_restore_callback, pattern="^restore_"))
