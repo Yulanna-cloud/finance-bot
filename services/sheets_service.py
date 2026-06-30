@@ -570,11 +570,19 @@ def fix_categories_in_sheet() -> dict:
             if clothing_fixed:
                 continue
 
-            # Перевод конкретному человеку, попавший в Продукты → Переводы
-            if cat == "Продукты" and recv and rtype == "расход" and not any(
-                food in desc for food in ["продукт", "магазин", "пятер", "находк", "лента", "сырок", "хлеб", "молок"]
+            # Перевод конкретному человеку, попавший в Продукты или Прочее → Переводы
+            is_family = any(normalize_yo(k) in normalize_yo(recv) for k in FAMILY_SEARCH)
+            if is_family and rtype == "расход" and cat in ("Продукты", "Прочее") and not any(
+                food in desc for food in ["продукт", "магазин", "пятер", "находк", "лента", "сырок", "хлеб", "молок", "мармел", "слив"]
             ):
                 sheet.update_cell(row_idx, ic_cat + 1, "Переводы")
+                fixed += 1
+                continue
+
+            # Продукты из продуктового магазина, попавшие в Прочее
+            FOOD_SHOPS = ["пятерочк", "магнит", "лента", "перекресток", "находка", "дикси", "ашан", "вкусвилл"]
+            if cat == "Прочее" and any(s in shop for s in FOOD_SHOPS):
+                sheet.update_cell(row_idx, ic_cat + 1, "Продукты")
                 fixed += 1
                 continue
 
