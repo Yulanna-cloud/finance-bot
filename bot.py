@@ -42,7 +42,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton("✏️ Изменить запись"), KeyboardButton("↩️ Восстановить")],
     ],
     resize_keyboard=True,
-    is_persistent=True,
+    is_persistent=False,
 )
 
 

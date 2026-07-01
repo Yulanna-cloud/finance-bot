@@ -138,7 +138,6 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cats = report.get("все_категории", {}) if "ошибка" not in report else {}
 
     lines = [f"💼 *Бюджет на {MONTH_NAMES_RU[month]} {year}*\n"]
-    lines.append("`Категория      Лимит  Факт  Остат`")
 
     total_spent = 0
     total_limit = 0
@@ -150,19 +149,15 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if spent >= limit:
             dot = "🔴"
-            left_str = f"-{abs(int(left))}"
+            left_str = f"−{abs(int(left))} ₽"
         elif spent >= limit * 0.8:
             dot = "🟡"
-            left_str = f"+{int(left)}"
+            left_str = f"+{int(left)} ₽"
         else:
             dot = "🟢"
-            left_str = f"+{int(left)}"
+            left_str = f"+{int(left)} ₽"
 
-        cat_short = cat[:10].ljust(10)
-        lim_str = str(int(limit)).rjust(6)
-        spent_str = str(int(spent)).rjust(5)
-        left_pad = left_str.rjust(6)
-        lines.append(f"`{dot}{cat_short} {lim_str} {spent_str} {left_pad}`")
+        lines.append(f"{dot} *{cat}* — {int(limit)} ₽ · факт {int(spent)} ₽ · {left_str}")
 
     total_left = total_limit - total_spent
     sign = "+" if total_left >= 0 else "−"
