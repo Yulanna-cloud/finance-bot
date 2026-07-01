@@ -87,8 +87,7 @@ CATEGORY_RULES = {
     "Животные":     ["корм", "ветеринар", "whiskas", "royal canin"],
     "Красота":      ["салон", "парикмахер", "маникюр", "тени", "тушь", "помада", "косметик"],
     "Бытовая химия":["порошок", "мыло", "шампунь", "гель", "фейри", "зубная", "туалетная бумага"],
-    "Одежда":       ["одежда", "обувь", "куртка", "кроссовк", "wildberries", "вайлдберриз",
-                     "вайлдберис", "ozon", "озон", "трусы", "носки"],
+    "Одежда":       ["одежда", "обувь", "куртка", "кроссовк", "трусы", "носки"],
     "Развлечения":  ["кино", "театр", "концерт", "музей"],
     "Подписки":     ["яндекс плюс", "yandex plus", "netflix", "spotify", "icloud"],
     "Подписки ИИ":  ["claude", "клод", "chatgpt", "чатгпт", "чат гпт", "openai", "midjourney", "anthropic", "нейросет", "гпт"],
@@ -355,6 +354,18 @@ def classify_text(text: str) -> dict:
 
     family = extract_family_member(text)
 
+    # Маркетплейсы — магазин определяем сами, категорию отдаём Groq
+    MARKETPLACE_KEYWORDS = {
+        "wildberries": "Wildberries", "вайлдберриз": "Wildberries",
+        "вайлдберис": "Wildberries", "вб": "Wildberries", "wb": "Wildberries",
+        "ozon": "Ozon", "озон": "Ozon",
+    }
+    marketplace = None
+    for kw, display in MARKETPLACE_KEYWORDS.items():
+        if kw in text_lower:
+            marketplace = display
+            break
+
     store_name = None
     for store in GROCERY_STORES:
         if store in text_lower:
@@ -368,7 +379,9 @@ def classify_text(text: str) -> dict:
         for keyword in keywords:
             if keyword in text_lower:
                 subcat = get_subcat(category, text_lower)
-                if category == "Одежда" and keyword in ("wildberries", "вайлдберриз", "вайлдберис"):
+                if marketplace:
+                    store_display = marketplace
+                elif category == "Одежда" and keyword in ("wildberries", "вайлдберриз", "вайлдберис"):
                     store_display = "Wildberries"
                 elif category == "Одежда" and keyword in ("ozon", "озон"):
                     store_display = "Ozon"
@@ -395,11 +408,12 @@ def classify_text(text: str) -> dict:
         return _default(text, main_amount, op_type, family, op_type)
 
     family_hint = f'\nЧлен семьи упомянут: "{family}" — если расход, запиши в получатель; если доход — в отправитель.' if family else ""
+    marketplace_hint = f'\nМагазин определён: "{marketplace}" — запиши в поле магазин.' if marketplace else ""
 
     prompt = f"""Ты помощник для учёта финансов. Верни ТОЛЬКО JSON без markdown.
 
 Операция: "{text}"
-{family_hint}
+{family_hint}{marketplace_hint}
 
 Категории (выбери одну):
 Продукты, Кафе, Транспорт, Жилье, Коммуналка, Медицина, Обучение, Дети,
@@ -446,6 +460,8 @@ def classify_text(text: str) -> dict:
             else:
                 result["отправитель"] = family
                 result["получатель"] = ""
+        if marketplace:
+            result["магазин"] = marketplace
         if parsed_date:
             result["дата"] = parsed_date
         return result
