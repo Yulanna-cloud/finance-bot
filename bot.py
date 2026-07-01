@@ -4,7 +4,7 @@
 import os
 import logging
 from datetime import time as datetime_time
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
@@ -32,14 +32,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Минимальная клавиатура — всегда одна кнопка
+MIN_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton("☰ Меню")]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+# Полное меню — открывается по кнопке
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("🚀 Старт"),           KeyboardButton("❓ Помощь")],
         [KeyboardButton("📊 Отчёт за месяц"), KeyboardButton("📅 Итоги года")],
         [KeyboardButton("🔍 Расшифровать категорию"), KeyboardButton("🧠 Анализ трат")],
         [KeyboardButton("📋 Планирование"),     KeyboardButton("💼 Бюджет")],
         [KeyboardButton("🗑 Удалить запись"),  KeyboardButton("📁 Архив")],
         [KeyboardButton("✏️ Изменить запись"), KeyboardButton("↩️ Восстановить")],
+        [KeyboardButton("❓ Помощь"),           KeyboardButton("✖️ Закрыть меню")],
     ],
     resize_keyboard=True,
     is_persistent=False,
@@ -57,9 +65,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📄 *Файл выписки* — загрузи PDF/CSV/Excel из банка\n"
         "💬 *Текст* — «такси 300» или «Пятёрочка 1200», как удобно\n"
         "❓ *Вопрос* — «сколько перевела Рите», «расшифруй красота»\n\n"
-        "Кнопки внизу — всё главное 👇"
+        "Нажми *☰ Меню* чтобы открыть все функции 👇"
     )
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MIN_KEYBOARD)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,8 +77,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Перехватывает нажатия кнопок главного меню."""
     text = update.message.text.strip()
-    if "Старт" in text:
-        await start(update, context)
+    if "☰ Меню" in text:
+        await update.message.reply_text("Выбери что нужно:", reply_markup=MAIN_KEYBOARD)
+    elif "Закрыть меню" in text:
+        await update.message.reply_text("Хорошо, убрал 👌", reply_markup=MIN_KEYBOARD)
     elif "Отчёт" in text:
         await handle_report(update, context)
     elif "Итоги года" in text:
@@ -112,7 +122,7 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Готово! Поправил {n} записей — теперь всё по полочкам 📂")
 
 
-MENU_BUTTON_TEXTS = ["🚀 Старт", "📊 Отчёт", "📅 Итоги", "🧠 Анализ", "📋 Планирование", "💼 Бюджет", "🔍 Расшифровать", "🗑 Удалить", "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
+MENU_BUTTON_TEXTS = ["☰ Меню", "✖️ Закрыть", "📊 Отчёт", "📅 Итоги", "🧠 Анализ", "📋 Планирование", "💼 Бюджет", "🔍 Расшифровать", "🗑 Удалить", "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
 
 
 async def monthly_reminder(context):
