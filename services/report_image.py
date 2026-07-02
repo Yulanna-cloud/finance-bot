@@ -73,22 +73,25 @@ def render_report_image(
     try:
         from PIL import Image, ImageDraw
 
-        # Готовим категории: только расходы > 0, по убыванию, максимум 12 строк
+        # Готовим категории: только расходы > 0, по убыванию, максимум 15 строк
         items = [(k, float(v)) for k, v in categories.items() if float(v) > 0]
         items.sort(key=lambda x: x[1], reverse=True)
-        MAX_ROWS = 12
+        MAX_ROWS = 15
         if len(items) > MAX_ROWS:
             head = items[:MAX_ROWS - 1]
-            rest = sum(v for _, v in items[MAX_ROWS - 1:])
-            items = head + [("Остальное", rest)]
+            rest_items = items[MAX_ROWS - 1:]
+            rest = sum(v for _, v in rest_items)
+            items = head + [(f"+ ещё {len(rest_items)} мелких", rest)]
 
-        W = 900
-        pad = 40
-        header_h = 70
-        tiles_h = 96
-        cmp_h = 34 if prev_expenses is not None else 0
-        row_h = 46
-        chart_top = pad + header_h + tiles_h + cmp_h + 20
+        # Уже и с более крупным шрифтом — так текст читается крупнее после того,
+        # как Telegram ужмёт картинку под ширину экрана телефона.
+        W = 720
+        pad = 34
+        header_h = 62
+        tiles_h = 100
+        cmp_h = 36 if prev_expenses is not None else 0
+        row_h = 52
+        chart_top = pad + header_h + tiles_h + cmp_h + 18
         chart_h = max(row_h * len(items), row_h)
         H = chart_top + chart_h + pad
 
@@ -97,10 +100,10 @@ def render_report_image(
 
         f_title = _load_font(34, bold=True)
         f_tile_label = _load_font(18)
-        f_tile_val = _load_font(28, bold=True)
-        f_cmp = _load_font(20)
-        f_cat = _load_font(20)
-        f_amt = _load_font(20, bold=True)
+        f_tile_val = _load_font(25, bold=True)
+        f_cmp = _load_font(21)
+        f_cat = _load_font(24)
+        f_amt = _load_font(23, bold=True)
 
         # Заголовок
         d.text((pad, pad), f"Отчёт за {month_name} {year}", font=f_title, fill=INK)
@@ -130,22 +133,25 @@ def render_report_image(
             ref = prev_month_name or "прошлым месяцем"
             if abs(diff) < 1:
                 txt, col = f"Столько же, сколько в {ref}", MUTED
-            elif diff > 0:
-                pct = f" (+{diff / prev_expenses * 100:.0f}%)" if prev_expenses > 0 else ""
-                txt, col = f"▲ на {_fmt(diff)}{pct} больше, чем в {ref}", RED
             else:
-                pct = f" (−{abs(diff) / prev_expenses * 100:.0f}%)" if prev_expenses > 0 else ""
-                txt, col = f"▼ на {_fmt(abs(diff))}{pct} меньше, чем в {ref}", GREEN
+                arrow = "▲" if diff > 0 else "▼"
+                word = "больше" if diff > 0 else "меньше"
+                col = RED if diff > 0 else GREEN
+                # Процент показываем только если он осмысленный: в прошлом месяце
+                # были заметные траты и рост/падение не в разы (иначе «+7605%»).
+                show_pct = prev_expenses >= 500 and abs(diff) / prev_expenses <= 3
+                pct = f" ({'+' if diff > 0 else '−'}{abs(diff) / prev_expenses * 100:.0f}%)" if show_pct else ""
+                txt = f"{arrow} на {_fmt(abs(diff))}{pct} {word}, чем в {ref}"
             d.text((pad, cy), txt, font=f_cmp, fill=col)
 
         # Полоски по категориям
         max_val = max((v for _, v in items), default=1) or 1
-        label_w = 200
-        amt_w = 130
+        label_w = 210
+        amt_w = 120
         bar_x0 = pad + label_w
         bar_x1 = W - pad - amt_w
         bar_span = bar_x1 - bar_x0
-        bar_th = 22
+        bar_th = 24
 
         for i, (name, val) in enumerate(items):
             cy = chart_top + i * row_h
