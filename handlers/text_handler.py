@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from services.sheets_service import (
     write_operation, write_operations_batch, smart_query,
-    get_monthly_report, now_ufa, update_operation_category
+    get_monthly_report, now_ufa, update_operation_category, get_day_report
 )
 from services.gemini_service import classify_text, classify_text_multi, is_multi_line_input
 
@@ -70,6 +70,46 @@ def resolve_category(text: str) -> str | None:
             if w.startswith(stem):
                 return CATEGORY_STEMS[stem]
     return None
+
+
+def detect_day_query(text: str) -> int | None:
+    """Распознаёт вопрос про траты за день: «сколько потратила сегодня»,
+    «покажи расходы сегодня», «расходы за вчера». Возвращает смещение в днях
+    (0 — сегодня, 1 — вчера) или None. Если в тексте есть сумма — это запись
+    траты, а не вопрос, поэтому None."""
+    t = text.lower()
+    if re.search(r"\d", t):
+        return None
+    if "сегодня" in t:
+        offset = 0
+    elif "вчера" in t:
+        offset = 1
+    else:
+        return None
+    spend_words = ["сколько", "трат", "расход", "потрат", "покажи", "показать"]
+    return offset if any(w in t for w in spend_words) else None
+
+
+async def reply_day_expenses(update, offset: int):
+    """Отправляет сумму и список трат за день."""
+    rep = get_day_report(offset)
+    when = "Сегодня" if offset == 0 else "Вчера"
+    if "ошибка" in rep:
+        await update.message.reply_text("Не смогла посчитать траты за день 🤔")
+        return
+    if rep["количество"] == 0:
+        await update.message.reply_text(f"{when} ({rep['дата']}) трат ещё нет 👍")
+        return
+    lines = [
+        f"🧾 *{when} потрачено: {rep['сумма']:,.0f} ₽*",
+        f"_{rep['дата']} · {rep['количество']} операций_\n",
+    ]
+    for desc, amount in rep["операции"][:20]:
+        short = desc if len(desc) <= 32 else desc[:31] + "…"
+        lines.append(f"• {short} — *{amount:,.0f} ₽*")
+    if rep["количество"] > 20:
+        lines.append(f"…и ещё {rep['количество'] - 20}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 def detect_correction(text: str) -> tuple[str, str | None]:
@@ -186,6 +226,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Просмотр бюджетов
     if t_lower in ("бюджет", "бюджеты", "мой бюджет"):
         await handle_budget(update, context)
+        return
+
+    # Вопрос про траты за день («сколько потратила сегодня», «расходы за вчера»)
+    day_offset = detect_day_query(text)
+    if day_offset is not None:
+        await reply_day_expenses(update, day_offset)
         return
 
     # Быстрая поправка категории последней записи («нет, это техника»).

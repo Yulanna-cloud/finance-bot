@@ -73,15 +73,10 @@ def render_report_image(
     try:
         from PIL import Image, ImageDraw
 
-        # Готовим категории: только расходы > 0, по убыванию, максимум 15 строк
+        # Показываем ВСЕ категории с расходом > 0, по убыванию — это отчёт,
+        # видно должно быть всё. Картинка просто станет выше, на телефоне листается.
         items = [(k, float(v)) for k, v in categories.items() if float(v) > 0]
         items.sort(key=lambda x: x[1], reverse=True)
-        MAX_ROWS = 15
-        if len(items) > MAX_ROWS:
-            head = items[:MAX_ROWS - 1]
-            rest_items = items[MAX_ROWS - 1:]
-            rest = sum(v for _, v in rest_items)
-            items = head + [(f"+ ещё {len(rest_items)} мелких", rest)]
 
         # Уже и с более крупным шрифтом — так текст читается крупнее после того,
         # как Telegram ужмёт картинку под ширину экрана телефона.

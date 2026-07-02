@@ -386,6 +386,77 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         return {"ошибка": str(e)}
 
 
+def get_day_report(day_offset: int = 0) -> dict:
+    """Расходы за один день. day_offset=0 — сегодня, 1 — вчера.
+    Возвращает сумму, число операций и список позиций (описание, сумма)."""
+    try:
+        from datetime import timedelta
+        target = (now_ufa() - timedelta(days=day_offset)).date()
+
+        client = get_sheets_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
+        all_values = sheet.get_all_values()
+        if len(all_values) <= 1:
+            return {"дата": target.strftime("%d.%m.%Y"), "сумма": 0, "количество": 0, "операции": []}
+
+        headers = [h.strip().lower() for h in all_values[0]]
+
+        def find_col(keywords, default):
+            for kw in keywords:
+                for i, h in enumerate(headers):
+                    if kw in h:
+                        return i
+            return default
+
+        ic_date = find_col(["дата"], 2)
+        ic_type = find_col(["тип"], 6)
+        ic_sum  = find_col(["сумма"], 7)
+        ic_cat  = find_col(["категори"], 9)
+        ic_desc = find_col(["описани", "товар"], 13)
+
+        total = 0.0
+        operations = []
+        for raw in all_values[1:]:
+            row_date = _get_cell(raw, ic_date)
+            same_day = False
+            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%m/%d/%Y"):
+                try:
+                    if datetime.strptime(row_date[:10], fmt).date() == target:
+                        same_day = True
+                    break
+                except ValueError:
+                    continue
+            if not same_day:
+                continue
+
+            if _get_cell(raw, ic_type).lower() != "расход":
+                continue
+            try:
+                amount = float(
+                    _get_cell(raw, ic_sum).replace(" ", "").replace("\xa0", "").replace(",", ".") or 0
+                )
+            except (ValueError, TypeError):
+                continue
+            if amount <= 0:
+                continue
+
+            desc = _get_cell(raw, ic_desc).strip() or _get_cell(raw, ic_cat).strip() or "Расход"
+            operations.append((desc, amount))
+            total += amount
+
+        operations.sort(key=lambda x: x[1], reverse=True)
+        return {
+            "дата": target.strftime("%d.%m.%Y"),
+            "сумма": total,
+            "количество": len(operations),
+            "операции": operations,
+        }
+
+    except Exception as e:
+        logger.error(f"Ошибка get_day_report: {e}")
+        return {"ошибка": str(e)}
+
+
 def get_year_summary(year: Optional[int] = None) -> dict:
     """Итоги года: доходы, расходы, остаток по каждому месяцу."""
     try:
