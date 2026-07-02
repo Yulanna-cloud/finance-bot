@@ -104,7 +104,10 @@ def get_next_op_id(sheet) -> str:
         return f"OP-{now_ufa().strftime('%Y%m%d%H%M%S')}"
 
 
-def write_operation(operation: dict, source: str = "telegram") -> bool:
+def write_operation(operation: dict, source: str = "telegram") -> str:
+    """Записывает операцию. Возвращает op_id (например 'OP-0042') при успехе
+    или пустую строку при ошибке — пустая строка ложна, поэтому старые вызовы
+    вида `if write_operation(...)` продолжают работать без изменений."""
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -145,10 +148,31 @@ def write_operation(operation: dict, source: str = "telegram") -> bool:
 
         sheet.append_row(row, value_input_option="USER_ENTERED")
         logger.info(f"Записана операция {op_id}: {operation.get('тип')} {operation.get('категория')} {operation.get('сумма')}р")
-        return True
+        return op_id
 
     except Exception as e:
         logger.error(f"Ошибка записи в Google Sheets: {e}")
+        return ""
+
+
+def update_operation_category(op_id: str, new_category: str) -> bool:
+    """Меняет категорию у ранее записанной операции по её op_id.
+    Категория — колонка 10 (индекс 9 в write_operation), op_id — колонка 1."""
+    if not op_id:
+        return False
+    try:
+        client = get_sheets_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
+        ids = sheet.col_values(1)
+        for i, value in enumerate(ids, start=1):
+            if value == op_id:
+                sheet.update_cell(i, 10, new_category)
+                logger.info(f"Категория {op_id} изменена на {new_category}")
+                return True
+        logger.warning(f"update_operation_category: {op_id} не найден")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка update_operation_category: {e}")
         return False
 
 

@@ -2,10 +2,93 @@ import logging
 import re
 from telegram import Update
 from telegram.ext import ContextTypes
-from services.sheets_service import write_operation, write_operations_batch, smart_query, get_monthly_report, now_ufa
+from services.sheets_service import (
+    write_operation, write_operations_batch, smart_query,
+    get_monthly_report, now_ufa, update_operation_category
+)
 from services.gemini_service import classify_text, classify_text_multi, is_multi_line_input
 
 logger = logging.getLogger(__name__)
+
+
+# --- Быстрое исправление категории последней записи ответом-репликой ---
+# Пользователь пишет «нет, это техника» / «это одежда» / «техника» сразу после
+# записи — и бот меняет категорию последней операции, не заставляя лезть в /edit.
+
+# Фразы из нескольких слов проверяем первыми (чтобы «бытовая химия» не свелась
+# к «Бытовая техника» и «подписки ии» не превратились в обычные «Подписки»).
+CATEGORY_PHRASES = [
+    ("подписки ии", "Подписки ИИ"),
+    ("бытовая техника", "Бытовая техника"),
+    ("бытовая химия", "Бытовая химия"),
+]
+
+# Основы слов — сопоставляем по началу слова, поэтому падежи ловятся сами
+# («аптеку», «аптеки», «аптека» → все начинаются с «аптек»). Порядок не важен,
+# перебираем от самой длинной основы к короткой, чтобы предпочесть точную.
+CATEGORY_STEMS = {
+    "техник": "Бытовая техника",
+    "хими": "Бытовая химия",
+    "продукт": "Продукты", "еда": "Продукты", "еду": "Продукты", "еды": "Продукты",
+    "кафе": "Кафе", "ресторан": "Кафе",
+    "транспорт": "Транспорт", "такси": "Транспорт", "бензин": "Транспорт",
+    "одежд": "Одежда", "обув": "Одежда",
+    "аптек": "Аптека", "лекарств": "Аптека",
+    "медицин": "Медицина",
+    "красот": "Красота", "косметик": "Красота",
+    "животн": "Животные", "корм": "Животные",
+    "подписк": "Подписки",
+    "связ": "Связь",
+    "коммунал": "Коммуналка", "интернет": "Интернет",
+    "развлечен": "Развлечения",
+    "перевод": "Переводы",
+    "электротовар": "Электротовары",
+    "табак": "Табак", "сигарет": "Табак",
+    "алкогол": "Алкоголь",
+    "дет": "Дети",
+    "обучен": "Обучение",
+    "жиль": "Жилье",
+    "ипотек": "Ипотека", "страховк": "Страховка",
+    "проч": "Прочее", "доход": "Доход",
+}
+
+CORRECTION_CUES = [
+    "нет", "не ", "это ", "эт ", "поменяй", "исправь", "замени",
+    "неправильно", "неверно", "не туда", "категория",
+]
+
+
+def resolve_category(text: str) -> str | None:
+    """Возвращает каноническое имя категории из текста или None."""
+    t = text.lower()
+    for phrase, cat in CATEGORY_PHRASES:
+        if phrase in t:
+            return cat
+    words = re.findall(r"[а-яёa-z]+", t)
+    for stem in sorted(CATEGORY_STEMS, key=len, reverse=True):
+        for w in words:
+            if w.startswith(stem):
+                return CATEGORY_STEMS[stem]
+    return None
+
+
+def detect_correction(text: str) -> tuple[str, str | None]:
+    """Определяет, является ли сообщение поправкой категории.
+    Возвращает ('fix', категория) / ('ask', None) / ('', None).
+    Поправки не содержат сумму — если в тексте есть цифры, это новая операция."""
+    t = text.lower()
+    if re.search(r"\d", t):
+        return "", None
+    resolved = resolve_category(t)
+    has_cue = any(cue in t for cue in CORRECTION_CUES)
+    if has_cue and resolved:
+        return "fix", resolved
+    if has_cue and not resolved:
+        return "ask", None
+    # Голая категория одним-двумя словами («техника», «бытовая техника»)
+    if resolved and len(t.split()) <= 3:
+        return "fix", resolved
+    return "", None
 
 # Слова, которые ОДНОЗНАЧНО означают запись операции — проверяем В ПЕРВУЮ ОЧЕРЕДЬ
 # Если хоть одно из них есть в тексте — это не поисковый запрос, а операция
@@ -105,6 +188,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_budget(update, context)
         return
 
+    # Быстрая поправка категории последней записи («нет, это техника»).
+    # Не трогаем поисковые запросы вроде «детали продукты» — их отдаём поиску.
+    last_op = context.chat_data.get("last_op")
+    if last_op and not is_query(text):
+        action, new_cat = detect_correction(text)
+        if action == "fix":
+            if new_cat == last_op.get("категория"):
+                await update.message.reply_text(f"Уже записано как *{new_cat}* 👌", parse_mode="Markdown")
+                return
+            ok = update_operation_category(last_op["op_id"], new_cat)
+            if ok:
+                old_cat = last_op.get("категория", "?")
+                last_op["категория"] = new_cat
+                await update.message.reply_text(
+                    f"Поправил: ~{old_cat}~ → *{new_cat}* ✅", parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    "Не смог поправить запись 🤔 Попробуй через ✏️ Изменить."
+                )
+            return
+        if action == "ask":
+            await update.message.reply_text(
+                "На какую категорию поменять? Напиши, например: _это техника_",
+                parse_mode="Markdown"
+            )
+            return
+
     # Поисковый запрос
     if is_query(text):
         result = smart_query(text)
@@ -126,6 +237,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         ok, errors = write_operations_batch(operations, source="текст")
+        # После нескольких записей поправлять «последнюю» неоднозначно — сбрасываем
+        context.chat_data.pop("last_op", None)
 
         # Формируем ответ
         lines = []
@@ -171,6 +284,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
         if operations:
             ok, errors = write_operations_batch(operations, source="текст")
+            context.chat_data.pop("last_op", None)
             total = sum(op["сумма"] for op in operations)
             lines = [f"• {op['описание'] or op['категория']} — {op['сумма']:,.0f} ₽" for op in operations[:10]]
             store_str = f"🏪 *{data['магазин']}*\n" if data.get("магазин") else ""
@@ -182,8 +296,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # Обычная одиночная запись
-    ok = write_operation(data)
-    if ok:
+    op_id = write_operation(data)
+    if op_id:
+        # Запоминаем последнюю запись, чтобы можно было поправить категорию репликой
+        context.chat_data["last_op"] = {
+            "op_id": op_id,
+            "категория": data.get("категория", ""),
+            "сумма": data.get("сумма"),
+            "описание": data.get("описание", ""),
+        }
         тип = data.get("тип", "расход")
         emoji = "💰" if тип == "доход" else "💸"
         msg = f"{emoji} *{data['сумма']:,.0f} ₽* — {data.get('категория', '')}"
@@ -195,6 +316,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"\n👤 Получатель: {data['получатель']}"
         if data.get("отправитель"):
             msg += f"\n👤 От: {data['отправитель']}"
+        # Если не уверен в категории — подскажем, что можно поправить одной репликой
+        if data.get("уверенность", 1) < 0.95:
+            msg += "\n\n_не та категория? ответь, например: это техника_"
         await update.message.reply_text(msg, parse_mode="Markdown")
 
         # Проверяем бюджет для расходов
