@@ -3,13 +3,13 @@
 PDF Сбербанка парсится собственным кодом без ИИ.
 Если документ — картинка (jpg/jpeg/png/webp) — передаём в photo_handler.
 """
+from __future__ import annotations  # аннотации становятся строками — pandas можно грузить лениво
 
 import logging
 import io
 import os
 import re
 import json
-import pandas as pd
 from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -353,7 +353,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка при обработке файла.")
 
 
-def read_statement_file(buf: io.BytesIO, ext: str, filename: str) -> pd.DataFrame:
+def read_statement_file(buf: io.BytesIO, ext: str, filename: str) -> "pd.DataFrame":
+    import pandas as pd  # тяжёлый импорт — грузим только когда реально пришла выписка
     try:
         if ext in (".xlsx", ".xls"):
             engine = "openpyxl" if ext == ".xlsx" else "xlrd"
