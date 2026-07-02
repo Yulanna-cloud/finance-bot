@@ -6,8 +6,61 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from services.sheets_service import get_monthly_report, get_year_summary, now_ufa, MONTH_NAMES_RU
+from services.report_image import render_report_image
 
 logger = logging.getLogger(__name__)
+
+
+def _build_category_lines(all_cats: dict, expenses: float,
+                          transfers_detail: dict, clothing_detail: dict) -> list:
+    """Текстовая разбивка по категориям — используется как запасной вариант,
+    если картинку отрисовать не удалось."""
+    lines = ["📂 *Расходы по категориям:*\n"]
+    GROUPS = [
+        ("🏠 Жильё и платежи",  ["Ипотека", "ипотека", "Коммуналка", "Интернет", "Связь", "Страховка", "Жилье"]),
+        ("🍎 Еда",              ["Продукты", "Кафе"]),
+        ("🧹 Быт",              ["Бытовая химия"]),
+        ("💄 Красота",          ["Красота"]),
+        ("👗 Одежда",           ["Одежда", "Дети"]),
+        ("🍷 Алкоголь и табак", ["Алкоголь", "Табак"]),
+        ("💊 Здоровье",         ["Медицина", "Аптека"]),
+        ("📚 Развитие",         ["Обучение", "Подписки ИИ"]),
+        ("🎮 Досуг",            ["Развлечения", "Подписки"]),
+        ("🐾 Животные",         ["Животные"]),
+        ("🚗 Транспорт",        ["Транспорт"]),
+        ("💸 Переводы",         ["Переводы"]),
+        ("📦 Прочее",           ["Электротовары", "Бытовая техника", "Прочее"]),
+    ]
+    NAME_SHORT = {"Маргарита П.": "Рите", "Диана Ш.": "Диане", "Алексей П.": "Лёше"}
+    shown = set()
+    for group_name, group_cats in GROUPS:
+        group_lines = []
+        for cat in group_cats:
+            matched = next((k for k in all_cats if k.lower() == cat.lower()), None)
+            if matched and matched not in shown:
+                amount = all_cats[matched]
+                pct = (amount / expenses * 100) if expenses > 0 else 0
+                display = matched[0].upper() + matched[1:] if matched else matched
+                group_lines.append(f"  • {display}: *{amount:,.0f} ₽* ({pct:.0f}%)")
+                shown.add(matched)
+                if matched.lower() == "переводы" and transfers_detail:
+                    for recv, sum_ in sorted(transfers_detail.items(), key=lambda x: x[1], reverse=True):
+                        group_lines.append(f"    └ {recv}: {sum_:,.0f} ₽")
+                if matched.lower() == "одежда" and clothing_detail:
+                    for person, sum_ in sorted(clothing_detail.items(), key=lambda x: x[1], reverse=True):
+                        label = NAME_SHORT.get(person, person)
+                        group_lines.append(f"    └ Одежда {label}: {sum_:,.0f} ₽")
+        if group_lines:
+            lines.append(f"*{group_name}*")
+            lines.extend(group_lines)
+            lines.append("")
+    leftover = [(k, v) for k, v in all_cats.items() if k not in shown]
+    if leftover:
+        lines.append("*📦 Остальное*")
+        for cat, amount in sorted(leftover, key=lambda x: x[1], reverse=True):
+            pct = (amount / expenses * 100) if expenses > 0 else 0
+            lines.append(f"  • {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
+    return lines
 
 
 def build_report_keyboard() -> InlineKeyboardMarkup:
@@ -139,106 +192,66 @@ async def _send_report(query, target_month: int, target_year: int):
         balance = report["остаток"]
         count = report["количество"]
         all_cats = report.get("все_категории", {})
+        transfers_detail = report.get("переводы_детали", {})
+        clothing_detail  = report.get("одежда_детали", {})
 
         balance_emoji = "✅" if balance >= 0 else "🔴"
         balance_sign = "+" if balance >= 0 else ""
 
-        lines = [
+        # Данные прошлого месяца — для сравнения (в картинке и в тексте)
+        prev_m = target_month - 1 if target_month > 1 else 12
+        prev_y = target_year if target_month > 1 else target_year - 1
+        prev = get_monthly_report(month=prev_m, year=prev_y)
+        prev_ok = "ошибка" not in prev and prev.get("количество", 0) > 0
+        prev_expenses = prev["расходы"] if prev_ok else None
+        prev_name = MONTH_NAMES_RU[prev_m]
+
+        # Короткий итог (без длинного списка категорий — он теперь в картинке)
+        summary = [
             f"📊 *Отчёт за {month} {year}*\n",
             f"💰 Доходы: *{income:,.0f} ₽*",
             f"💸 Расходы: *{expenses:,.0f} ₽*",
             f"{balance_emoji} Остаток: *{balance_sign}{balance:,.0f} ₽*",
-            f"🔢 Операций: {count}\n",
+            f"🔢 Операций: {count}",
         ]
+        # Прогноз — только для текущего месяца
+        if target_month == now.month and target_year == now.year and expenses > 0 and count > 0:
+            daily_avg = expenses / now.day if now.day > 0 else 0
+            summary.append(f"\n🔮 *Прогноз на месяц:* {daily_avg * 30:,.0f} ₽ _(≈{daily_avg:,.0f} ₽/день)_")
 
-        transfers_detail = report.get("переводы_детали", {})
-        clothing_detail  = report.get("одежда_детали", {})
-
+        # Пытаемся отрисовать картинку с категориями
+        image = None
         if all_cats:
-            lines.append("📂 *Расходы по категориям:*\n")
+            image = render_report_image(
+                month, year, income, expenses, balance, all_cats,
+                prev_expenses=prev_expenses, prev_month_name=prev_name,
+            )
 
-            GROUPS = [
-                ("🏠 Жильё и платежи",  ["Ипотека", "ипотека", "Коммуналка", "Интернет", "Связь", "Страховка", "Жилье"]),
-                ("🍎 Еда",              ["Продукты", "Кафе"]),
-                ("🧹 Быт",              ["Бытовая химия"]),
-                ("💄 Красота",          ["Красота"]),
-                ("👗 Одежда",           ["Одежда", "Дети"]),
-                ("🍷 Алкоголь и табак", ["Алкоголь", "Табак"]),
-                ("💊 Здоровье",         ["Медицина", "Аптека"]),
-                ("📚 Развитие",         ["Обучение", "Подписки ИИ"]),
-                ("🎮 Досуг",            ["Развлечения", "Подписки"]),
-                ("🐾 Животные",         ["Животные"]),
-                ("🚗 Транспорт",        ["Транспорт"]),
-                ("💸 Переводы",         ["Переводы"]),
-                ("📦 Прочее",           ["Электротовары", "Бытовая техника", "Прочее"]),
-            ]
+        if image is not None:
+            # Картинка удалась: короткий текст + изображение отдельным сообщением
+            await query.edit_message_text("\n".join(summary), parse_mode="Markdown")
+            await query.message.reply_photo(photo=image)
+            return
 
-            shown = set()
-            for group_name, group_cats in GROUPS:
-                group_lines = []
-                for cat in group_cats:
-                    # ищем без учёта регистра
-                    matched = next((k for k in all_cats if k.lower() == cat.lower()), None)
-                    if matched and matched not in shown:
-                        amount = all_cats[matched]
-                        pct = (amount / expenses * 100) if expenses > 0 else 0
-                        display = matched[0].upper() + matched[1:] if matched else matched
-                        group_lines.append(f"  • {display}: *{amount:,.0f} ₽* ({pct:.0f}%)")
-                        shown.add(matched)
-                        if matched.lower() == "переводы" and transfers_detail:
-                            for recv, sum_ in sorted(transfers_detail.items(), key=lambda x: x[1], reverse=True):
-                                group_lines.append(f"    └ {recv}: {sum_:,.0f} ₽")
-                        if matched.lower() == "одежда" and clothing_detail:
-                            # Показываем разбивку: мне / Рите / Диане
-                            NAME_SHORT = {
-                                "Маргарита П.": "Рите",
-                                "Диана Ш.":     "Диане",
-                                "Алексей П.":   "Лёше",
-                            }
-                            for person, sum_ in sorted(clothing_detail.items(), key=lambda x: x[1], reverse=True):
-                                label = NAME_SHORT.get(person, person)
-                                group_lines.append(f"    └ Одежда {label}: {sum_:,.0f} ₽")
-                if group_lines:
-                    lines.append(f"*{group_name}*")
-                    lines.extend(group_lines)
-                    lines.append("")  # пустая строка между группами
-
-            # Категории не попавшие ни в одну группу
-            leftover = [(k, v) for k, v in all_cats.items() if k not in shown]
-            if leftover:
-                lines.append("*📦 Остальное*")
-                for cat, amount in sorted(leftover, key=lambda x: x[1], reverse=True):
-                    pct = (amount / expenses * 100) if expenses > 0 else 0
-                    lines.append(f"  • {cat}: *{amount:,.0f} ₽* ({pct:.0f}%)")
-
-        # Прогноз + сравнение — только для текущего месяца
-        if target_month == now.month and target_year == now.year:
-            if expenses > 0 and count > 0:
-                days_passed = now.day
-                daily_avg = expenses / days_passed if days_passed > 0 else 0
-                forecast = daily_avg * 30
-                lines.append(f"\n🔮 *Прогноз на месяц:* {forecast:,.0f} ₽")
-                lines.append(f"_(в среднем {daily_avg:,.0f} ₽/день)_")
-
-            # Сравнение с прошлым месяцем
-            prev_m = target_month - 1 if target_month > 1 else 12
-            prev_y = target_year if target_month > 1 else target_year - 1
-            prev = get_monthly_report(month=prev_m, year=prev_y)
-            if "ошибка" not in prev and prev["количество"] > 0:
-                prev_name = MONTH_NAMES_RU[prev_m]
-                diff = expenses - prev["расходы"]
-                diff_sign = "+" if diff >= 0 else "−"
-                diff_emoji = "📈" if diff > 0 else "📉"
-                lines.append(f"\n{diff_emoji} *Против {prev_name}:* {diff_sign}{abs(diff):,.0f} ₽")
-                if diff > 0:
-                    lines.append(f"_Потратила больше, чем в прошлом месяце. Герман молчит, но заметил 😏_")
-                elif diff < 0:
-                    lines.append(f"_Потратила меньше! Герман доволен 👍_")
-                else:
-                    lines.append(f"_Копейка в копейку с прошлым месяцем. Редкость!_")
+        # Запасной вариант — старый текстовый отчёт целиком
+        lines = summary[:]
+        lines.append("")
+        if all_cats:
+            lines.extend(_build_category_lines(all_cats, expenses, transfers_detail, clothing_detail))
+        if prev_ok:
+            diff = expenses - prev["расходы"]
+            diff_sign = "+" if diff >= 0 else "−"
+            diff_emoji = "📈" if diff > 0 else "📉"
+            lines.append(f"\n{diff_emoji} *Против {prev_name}:* {diff_sign}{abs(diff):,.0f} ₽")
+            if diff > 0:
+                lines.append("_Потратила больше, чем в прошлом месяце. Герман молчит, но заметил 😏_")
+            elif diff < 0:
+                lines.append("_Потратила меньше! Герман доволен 👍_")
+            else:
+                lines.append("_Копейка в копейку с прошлым месяцем. Редкость!_")
 
         await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
 
     except Exception as e:
-        logger.error(f"Ошибка _send_report: {e}")
+        logger.error(f"Ошибка _send_report: {e}", exc_info=True)
         await query.edit_message_text("❌ Не удалось сформировать отчёт.")
