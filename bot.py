@@ -3,6 +3,8 @@
 """
 import os
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import time as datetime_time
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand
 from telegram.ext import (
@@ -176,10 +178,30 @@ async def post_init(app):
         )
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Отвечает 200 OK на любой запрос — нужно, чтобы Render (и внешний пингер)
+    считали сервис живым и не усыпляли его."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass  # не засорять логи пингами
+
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    HTTPServer(("0.0.0.0", port), _HealthHandler).serve_forever()
+
+
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("Не задан TELEGRAM_BOT_TOKEN!")
+
+    threading.Thread(target=start_health_server, daemon=True).start()
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
