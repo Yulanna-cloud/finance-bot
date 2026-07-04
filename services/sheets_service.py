@@ -261,6 +261,9 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         count = 0
 
         if len(all_values) <= 1:
+            archived = get_archived_report(target_month, target_year)
+            if archived:
+                return archived
             return {
                 "месяц": target_month_name, "год": target_year,
                 "доходы": 0, "расходы": 0, "остаток": 0,
@@ -368,6 +371,12 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
         clothing_detail  = expenses.pop("__clothing__", {})
         clean_expenses = {k: v for k, v in expenses.items() if not k.startswith("__")}
 
+        # За месяц нет живых строк — возможно, он уже в архиве
+        if count == 0:
+            archived = get_archived_report(target_month, target_year)
+            if archived:
+                return archived
+
         return {
             "месяц": target_month_name,
             "год": target_year,
@@ -384,6 +393,77 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
     except Exception as e:
         logger.error(f"Ошибка получения отчёта: {e}")
         return {"ошибка": str(e)}
+
+
+def get_archived_report(month: int, year: int) -> Optional[dict]:
+    """Собирает отчёт по месяцу из листа АРХИВ (там хранятся суммы по категориям).
+    Возвращает None, если такого месяца в архиве нет — тогда отчёт останется пустым."""
+    try:
+        client = get_sheets_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("АРХИВ")
+        rows = sheet.get_all_values()
+        if len(rows) <= 1:
+            return None
+
+        headers = [h.strip().lower() for h in rows[0]]
+
+        def col(names, default):
+            for n in names:
+                for i, h in enumerate(headers):
+                    if n in h:
+                        return i
+            return default
+
+        ic_year  = col(["год"], 1)
+        ic_month = col(["месяц"], 2)
+        ic_cat   = col(["категори"], 3)
+        ic_type  = col(["тип"], 4)
+        ic_sum   = col(["сумма"], 5)
+
+        month_name = MONTH_NAMES_RU[month]
+        income = 0.0
+        expenses = {}
+        matched = 0
+
+        for raw in rows[1:]:
+            if not month_matches(_get_cell(raw, ic_month), month_name):
+                continue
+            if str(year) not in _get_cell(raw, ic_year):
+                continue
+            try:
+                amount = float(
+                    _get_cell(raw, ic_sum).replace(" ", "").replace("\xa0", "").replace(",", ".") or 0
+                )
+            except (ValueError, TypeError):
+                continue
+            if amount == 0:
+                continue
+            matched += 1
+            if _get_cell(raw, ic_type).lower() == "доход":
+                income += amount
+            else:
+                cat = _get_cell(raw, ic_cat) or "Прочее"
+                expenses[cat] = expenses.get(cat, 0) + amount
+
+        if matched == 0:
+            return None
+
+        total_expense = sum(expenses.values())
+        top = sorted(expenses.items(), key=lambda x: x[1], reverse=True)[:5]
+        return {
+            "месяц": month_name, "год": year,
+            "доходы": income, "расходы": total_expense,
+            "остаток": income - total_expense,
+            "количество": matched,
+            "топ_категорий": top,
+            "все_категории": expenses,
+            "переводы_детали": {}, "одежда_детали": {},
+            "архив": True,
+        }
+
+    except Exception as e:
+        logger.error(f"Ошибка get_archived_report: {e}")
+        return None
 
 
 def get_day_report(day_offset: int = 0) -> dict:
@@ -506,6 +586,16 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         report = get_monthly_report(month, year)
         if "ошибка" in report:
             return report
+
+        # Отчёт пришёл из архива — значит месяц уже заархивирован.
+        # Повторно НЕ архивируем, иначе задвоим суммы в АРХИВе.
+        if report.get("архив"):
+            return {
+                "месяц": report["месяц"], "год": report["год"],
+                "уже_в_архиве": True,
+                "записей": 0, "очищено": 0,
+                "расходы": report["расходы"], "доходы": report["доходы"],
+            }
 
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)

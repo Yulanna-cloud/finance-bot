@@ -17,6 +17,14 @@ async def handle_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Ошибка: {result['ошибка']}")
             return
 
+        if result.get("уже_в_архиве"):
+            await update.message.reply_text(
+                f"📁 *{result['месяц']} {result['год']}* уже в архиве — повторно не трогаю.\n"
+                "Отчёт по нему по-прежнему открывается через 📊 Отчёт за месяц.",
+                parse_mode="Markdown"
+            )
+            return
+
         lines = [
             f"✅ *{result['месяц']} {result['год']} заархивирован!*\n",
             f"📊 Записей в архиве: {result['записей']}",

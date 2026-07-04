@@ -212,8 +212,11 @@ async def _send_report(query, target_month: int, target_year: int):
             f"💰 Доходы: *{income:,.0f} ₽*",
             f"💸 Расходы: *{expenses:,.0f} ₽*",
             f"{balance_emoji} Остаток: *{balance_sign}{balance:,.0f} ₽*",
-            f"🔢 Операций: {count}",
         ]
+        if report.get("архив"):
+            summary.append("🗄 _из архива (сводка по категориям)_")
+        else:
+            summary.append(f"🔢 Операций: {count}")
         # Прогноз — только для текущего месяца
         if target_month == now.month and target_year == now.year and expenses > 0 and count > 0:
             daily_avg = expenses / now.day if now.day > 0 else 0
