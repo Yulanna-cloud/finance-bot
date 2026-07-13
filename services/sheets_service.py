@@ -43,14 +43,13 @@ MONTH_NAMES_RU = {
     9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
 }
 
-# Имена семьи для поиска
 FAMILY_SEARCH = {
     "маргарит": "Маргарита П.",
-    "рит":      "Маргарита П.",   # Рита, Рите, Риту
+    "рит":      "Маргарита П.",
     "диан":     "Диана Ш.",
     "алекс":    "Алексей П.",
     "алёш":     "Алексей П.",
-    "леш":      "Алексей П.",     # Лёша, Леша, Лёше
+    "леш":      "Алексей П.",
     "лёш":      "Алексей П.",
     "мам":      "Райса Г.",
     "райс":     "Райса Г.",
@@ -61,7 +60,6 @@ FAMILY_SEARCH = {
 
 
 def normalize_yo(text: str) -> str:
-    """Заменяет ё→е для единообразного поиска."""
     return text.replace("ё", "е").replace("Ё", "Е")
 
 
@@ -105,9 +103,6 @@ def get_next_op_id(sheet) -> str:
 
 
 def write_operation(operation: dict, source: str = "telegram") -> str:
-    """Записывает операцию. Возвращает op_id (например 'OP-0042') при успехе
-    или пустую строку при ошибке — пустая строка ложна, поэтому старые вызовы
-    вида `if write_operation(...)` продолжают работать без изменений."""
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -156,8 +151,6 @@ def write_operation(operation: dict, source: str = "telegram") -> str:
 
 
 def update_operation_category(op_id: str, new_category: str) -> bool:
-    """Меняет категорию у ранее записанной операции по её op_id.
-    Категория — колонка 10 (индекс 9 в write_operation), op_id — колонка 1."""
     if not op_id:
         return False
     try:
@@ -334,7 +327,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             else:
                 total_expense += amount
                 expenses[category] = expenses.get(category, 0) + amount
-                # Для переводов собираем получателей
                 if category == "Переводы":
                     ic_recv = find_col_index(["получател"], 14)
                     ic_desc = find_col_index(["описани", "товар"], 13)
@@ -348,7 +340,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
                     transfers_detail = expenses.setdefault("__transfers__", {})
                     transfers_detail[recv] = transfers_detail.get(recv, 0) + amount
 
-                # Для одежды собираем по получателю
                 if category == "Одежда":
                     ic_recv = find_col_index(["получател"], 14)
                     recv_raw = normalize_yo(_get_cell(raw_row, ic_recv).lower())
@@ -365,13 +356,11 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
             [(k, v) for k, v in expenses.items() if not k.startswith("__")],
             key=lambda x: x[1], reverse=True
         )[:5]
-        logger.info(f"Отчёт за {target_month_name} {target_year}: доходы={income}, расходы={total_expense}, операций={count}")
 
         transfers_detail = expenses.pop("__transfers__", {})
         clothing_detail  = expenses.pop("__clothing__", {})
         clean_expenses = {k: v for k, v in expenses.items() if not k.startswith("__")}
 
-        # За месяц нет живых строк — возможно, он уже в архиве
         if count == 0:
             archived = get_archived_report(target_month, target_year)
             if archived:
@@ -396,8 +385,6 @@ def get_monthly_report(month: Optional[int] = None, year: Optional[int] = None) 
 
 
 def get_archived_report(month: int, year: int) -> Optional[dict]:
-    """Собирает отчёт по месяцу из листа АРХИВ (там хранятся суммы по категориям).
-    Возвращает None, если такого месяца в архиве нет — тогда отчёт останется пустым."""
     try:
         client = get_sheets_client()
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet("АРХИВ")
@@ -467,10 +454,7 @@ def get_archived_report(month: int, year: int) -> Optional[dict]:
 
 
 def get_day_report(day_offset: int = 0) -> dict:
-    """Расходы за один день. day_offset=0 — сегодня, 1 — вчера.
-    Возвращает сумму, число операций и список позиций (описание, сумма)."""
     try:
-        from datetime import timedelta
         target = (now_ufa() - timedelta(days=day_offset)).date()
 
         client = get_sheets_client()
@@ -538,7 +522,6 @@ def get_day_report(day_offset: int = 0) -> dict:
 
 
 def get_year_summary(year: Optional[int] = None) -> dict:
-    """Итоги года: доходы, расходы, остаток по каждому месяцу."""
     try:
         now = now_ufa()
         target_year = year or now.year
@@ -558,8 +541,8 @@ def get_year_summary(year: Optional[int] = None) -> dict:
                 "расходы": rep["расходы"],
                 "остаток": rep["остаток"],
             })
-        total_income   = sum(m["доходы"]  for m in months_data)
-        total_expense  = sum(m["расходы"] for m in months_data)
+        total_income  = sum(m["доходы"]  for m in months_data)
+        total_expense = sum(m["расходы"] for m in months_data)
         return {
             "год": target_year,
             "месяцы": months_data,
@@ -587,8 +570,6 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         if "ошибка" in report:
             return report
 
-        # Отчёт пришёл из архива — значит месяц уже заархивирован.
-        # Повторно НЕ архивируем, иначе задвоим суммы в АРХИВе.
         if report.get("архив"):
             return {
                 "месяц": report["месяц"], "год": report["год"],
@@ -626,6 +607,7 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
         rows_to_keep = []
 
         if len(all_values) > 1:
+            header_row = all_values[0]
             hdrs = all_values[0]
             h_lower = [h.strip().lower() for h in hdrs]
 
@@ -663,10 +645,17 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
                 else:
                     rows_to_keep.append(raw_row)
 
-        if очищено > 0:
-            ops_sheet.resize(1)
-            if rows_to_keep:
-                ops_sheet.append_rows(rows_to_keep, value_input_option="USER_ENTERED")
+            if очищено > 0:
+                # ====== ИСПРАВЛЕНО: clear() вместо resize() ======
+                # resize() нестабилен и вызывает ошибки прав доступа.
+                # clear() полностью очищает лист, затем восстанавливаем заголовок
+                # и строки которые не относятся к архивируемому месяцу.
+                ops_sheet.clear()
+                if header_row:
+                    ops_sheet.append_row(header_row, value_input_option="USER_ENTERED")
+                if rows_to_keep:
+                    ops_sheet.append_rows(rows_to_keep, value_input_option="USER_ENTERED")
+                # =================================================
 
         return {
             "месяц": month_name, "год": year,
@@ -682,7 +671,6 @@ def archive_month(month: Optional[int] = None, year: Optional[int] = None) -> di
 
 
 def fix_categories_in_sheet() -> dict:
-    """Исправляет категории существующих записей в таблице."""
     try:
         client = get_sheets_client()
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet("ОПЕРАЦИИ")
@@ -701,31 +689,24 @@ def fix_categories_in_sheet() -> dict:
         ic_cat  = find_col(["категори"], 9)
         ic_desc = find_col(["описани", "товар"], 13)
         ic_shop = find_col(["магазин"], 12)
-
         ic_recv = find_col(["получател"], 14)
         ic_type = find_col(["тип"], 6)
 
         rules = [
-            # (ключевые слова в описании/магазине, новая категория)
             (["клод", "claude", "anthropic", "openai", "chatgpt", "чатгпт", "нейросет"], "Подписки ИИ"),
             (["мтс", "tele2", "теле2", "билайн", "мегафон"], "Связь"),
-            # Бытовая химия — стиральные средства и т.п.
             (["aer ", "aer д", "порошок", "гель для стирк", "кондиционер для белья",
               "domestos", "доместос", "mr proper", "мистер пропер", "fairy", "фейри"], "Бытовая химия"),
-            # Аптека — лекарства, препараты (в т.ч. из категории Медицина)
             (["лекарств", "лекарство", "флуконазол", "флукон", "таблетк", "капс.", "капсул", "мг №",
               "антибиотик", "анальгин", "аспирин", "ибупрофен", "парацетамол",
               "витамин", "мазь", "бинт", "пластырь", "шприц", "микстур",
               "антибактер", "мирмиспрей", "дезинфек", "антисептик",
               "36.6", "ригла", "горздрав", "планета здоровья"], "Аптека"),
-            # Животные — корм
             (["корм", "whiskas", "royal canin", "purina", "felix", "педигри",
               "pedigree", "д/с.", "д/к.", "для собак", "для кошек", "вет."], "Животные"),
         ]
 
-        # Одежда для конкретного человека — ключевые слова и кому
         CLOTHING_RULES = [
-            # (ключ. слова в описании, получатель, для кого)
             (["трус", "носк", "майк", "пижам", "колгот", "детск одежд", "школьн"],
              ["маргарит", "рит", "aton", "атон"],
              "Маргарита П."),
@@ -743,7 +724,6 @@ def fix_categories_in_sheet() -> dict:
             cat   = row[ic_cat]    if ic_cat   < len(row) else ""
             combined = desc + " " + shop
 
-            # Одежда детям — правим категорию и получателя
             clothing_fixed = False
             for cloth_words, person_keys, person_name in CLOTHING_RULES:
                 if any(w in desc for w in cloth_words) and any(k in (recv + shop) for k in person_keys):
@@ -756,7 +736,6 @@ def fix_categories_in_sheet() -> dict:
             if clothing_fixed:
                 continue
 
-            # Перевод конкретному человеку, попавший в Продукты или Прочее → Переводы
             is_family = any(normalize_yo(k) in normalize_yo(recv) for k in FAMILY_SEARCH)
             if is_family and rtype == "расход" and cat in ("Продукты", "Прочее") and not any(
                 food in desc for food in ["продукт", "магазин", "пятер", "находк", "лента", "сырок", "хлеб", "молок", "мармел", "слив"]
@@ -765,7 +744,6 @@ def fix_categories_in_sheet() -> dict:
                 fixed += 1
                 continue
 
-            # Продукты из продуктового магазина, попавшие в Прочее
             FOOD_SHOPS = ["пятерочк", "магнит", "лента", "перекресток", "находка", "дикси", "ашан", "вкусвилл"]
             if cat == "Прочее" and any(s in shop for s in FOOD_SHOPS):
                 sheet.update_cell(row_idx, ic_cat + 1, "Продукты")
@@ -785,12 +763,6 @@ def fix_categories_in_sheet() -> dict:
 
 
 def smart_query(query_text: str) -> dict:
-    """
-    Отвечает на вопросы типа:
-    - сколько потрачено на Маргариту
-    - сколько пришло от Алексея
-    - расходы на обучение в июне
-    """
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -804,7 +776,6 @@ def smart_query(query_text: str) -> dict:
         for char in [".", ",", "?", "!", "-", "/"]:
             raw_query = raw_query.replace(char, " ")
 
-        # Определяем месяц из запроса
         months_query = {
             "январ": "январь", "феврал": "февраль", "март": "март",
             "апрел": "апрель", "мае": "май", "май": "май", "июн": "июнь",
@@ -817,7 +788,6 @@ def smart_query(query_text: str) -> dict:
                 target_month = val
                 break
 
-        # Определяем кого ищем из семьи (ё→е нормализовано)
         target_person = None
         target_person_full = None
         for key, full_name in FAMILY_SEARCH.items():
@@ -826,21 +796,16 @@ def smart_query(query_text: str) -> dict:
                 target_person_full = full_name
                 break
 
-        # Определяем тип поиска
-        # "перевела/перевел" — доход только если есть "от" (мне перевели), иначе расход (я перевела Диане)
         has_transfer = any(w in raw_query for w in ["перевел", "перевела"])
         transfer_is_income = has_transfer and " от " in raw_query
         income_words = ["пришло", "приход", "получил", "получила", "от "]
         is_income_search = any(w in raw_query for w in income_words) or transfer_is_income
 
-        # Поиск всех доходов или всех расходов
         search_all_income  = any(w in raw_query for w in ["доход", "приходы", "все доходы", "расшифруй доход"])
         search_all_expense = any(w in raw_query for w in ["все расходы", "расшифруй расход"])
 
-        # Определяем режим расшифровки
         is_breakdown = any(w in raw_query for w in ["расшифруй", "детали", "подробно", "из чего", "что входит"])
 
-        # Определяем категорию из запроса
         cat_search = None
         cat_map = {
             "обучени": "Обучение", "танц": "Обучение",
@@ -857,7 +822,7 @@ def smart_query(query_text: str) -> dict:
             "подписк": "Подписки",
             "связь": "Связь", "мтс": "Связь", "телефон": "Связь",
             "коммунал": "Коммуналка", "интернет": "Интернет",
-            "ипотек": "Ипотека", "ипотека": "Ипотека",
+            "ипотек": "Ипотека",
             "страховк": "Страховка",
             "перевод": "Переводы",
             "быт": "Бытовая химия", "химия": "Бытовая химия",
@@ -873,7 +838,6 @@ def smart_query(query_text: str) -> dict:
                 cat_search = cat
                 break
 
-        # Находим индексы колонок
         ops_headers = [h.strip().lower() for h in ops_rows[0]]
 
         def find_col(keywords, default):
@@ -897,7 +861,6 @@ def smart_query(query_text: str) -> dict:
         total_amount = 0.0
 
         for row in ops_rows[1:]:
-            # Дополняем строку до нужной длины
             max_idx = max(idx_cat, idx_subcat, idx_desc, idx_amount,
                          idx_recv, idx_shop, idx_sender)
             while len(row) <= max_idx:
@@ -914,11 +877,9 @@ def smart_query(query_text: str) -> dict:
             date       = row[idx_date]
             amount_str = row[idx_amount]
 
-            # Фильтр по месяцу
             if target_month and not month_matches(row_month, target_month):
                 continue
 
-            # Всё что есть в строке для поиска
             all_text = " ".join([
                 row_cat, row_subcat, row_desc, row_recv, row_shop, row_sender
             ]).lower()
@@ -926,34 +887,25 @@ def smart_query(query_text: str) -> dict:
             match = False
             is_income_row = "доход" in row_type
 
-            # Поиск всех доходов (только если не ищем конкретного человека)
             if search_all_income and not search_all_expense and not target_person:
                 if is_income_row:
                     match = True
-
-            # Поиск всех расходов
             elif search_all_expense and not target_person:
                 if not is_income_row:
                     match = True
-
-            # Поиск по имени человека
             elif target_person:
-                # Ищем и по ключу ("леш") и по частям полного имени ("алексей", "маргарит")
                 person_fragments = [target_person]
                 if target_person_full:
                     for part in target_person_full.lower().replace(".", "").split():
                         if len(part) >= 4:
                             person_fragments.append(part[:5])
                 if is_income_search and is_income_row:
-                    # Для дохода: смотрим только Отправитель + Описание, не Получатель
                     sender_desc = normalize_yo((row_sender + " " + row_desc).lower())
                     if any(frag in sender_desc for frag in person_fragments):
                         match = True
                 elif not is_income_search:
                     if any(frag in all_text for frag in person_fragments):
                         match = True
-
-            # Поиск по категории
             elif cat_search:
                 if cat_search.lower() in row_cat.lower():
                     match = True
@@ -981,9 +933,9 @@ def smart_query(query_text: str) -> dict:
             cat_str = f" категория {cat_search}" if cat_search else ""
             return {"ответ": f"Ничего не нашлось{person_str}{cat_str}{month_str}"}
 
-        month_label = f" за {target_month.title()}" if target_month else ""
+        month_label  = f" за {target_month.title()}" if target_month else ""
         person_label = f" {target_person_full}" if target_person_full else ""
-        cat_label = f" {cat_search}" if cat_search else ""
+        cat_label    = f" {cat_search}" if cat_search else ""
 
         limit = 30 if is_breakdown else 10
         lines = [
