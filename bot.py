@@ -4,6 +4,7 @@
 import os
 import logging
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import time as datetime_time
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand
@@ -34,14 +35,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Минимальная клавиатура — всегда одна кнопка
 MIN_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton("☰ Меню")]],
     resize_keyboard=True,
     is_persistent=True,
 )
 
-# Полное меню — открывается по кнопке
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("📊 Отчёт за месяц"), KeyboardButton("📅 Итоги года")],
@@ -77,7 +76,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перехватывает нажатия кнопок главного меню."""
     text = update.message.text.strip()
     if "☰ Меню" in text:
         await update.message.reply_text("Выбери что нужно:", reply_markup=MAIN_KEYBOARD)
@@ -128,7 +126,6 @@ MENU_BUTTON_TEXTS = ["☰ Меню", "✖️ Закрыть", "📊 Отчёт",
 
 
 async def monthly_reminder(context):
-    """Напоминание в конце месяца."""
     chat_id = context.job.data
     await context.bot.send_message(
         chat_id=chat_id,
@@ -142,7 +139,6 @@ async def monthly_reminder(context):
 
 
 async def post_init(app):
-    """Регистрирует список команд и планировщик напоминаний."""
     await app.bot.set_my_commands([
         BotCommand("start",   "🚀 Запустить бота / главное меню"),
         BotCommand("otchet",  "📊 Отчёт за месяц"),
@@ -160,7 +156,6 @@ async def post_init(app):
 
     chat_id = os.environ.get("OWNER_CHAT_ID")
     if chat_id:
-        # Напоминание 28-го — пора смотреть отчёт
         app.job_queue.run_monthly(
             monthly_reminder,
             when=datetime_time(hour=13, minute=0),
@@ -168,7 +163,6 @@ async def post_init(app):
             data=int(chat_id),
             name="monthly_reminder"
         )
-        # Напоминание 1-го — запланировать бюджет на новый месяц
         app.job_queue.run_monthly(
             monthly_plan_reminder,
             when=datetime_time(hour=9, minute=0),
@@ -179,8 +173,7 @@ async def post_init(app):
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
-    """Отвечает 200 OK на любой запрос — нужно, чтобы Render (и внешний пингер)
-    считали сервис живым и не усыпляли его."""
+    """Отвечает 200 OK — не даёт Render усыплять сервис."""
 
     def do_GET(self):
         self.send_response(200)
@@ -188,7 +181,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def log_message(self, format, *args):
-        pass  # не засорять логи пингами
+        pass
 
 
 def start_health_server():
@@ -196,12 +189,35 @@ def start_health_server():
     HTTPServer(("0.0.0.0", port), _HealthHandler).serve_forever()
 
 
+def self_ping_loop():
+    """
+    Пингует сам себя каждые 4 минуты.
+    Render усыпляет сервис после 15 минут без HTTP-запросов —
+    самопинг не даёт этому случиться даже если UptimeRobot временно недоступен.
+    """
+    import time
+    port = int(os.environ.get("PORT", 8080))
+    url = f"http://localhost:{port}/"
+    time.sleep(30)  # ждём пока health server запустится
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=5)
+        except Exception:
+            pass
+        time.sleep(240)  # 4 минуты
+
+
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("Не задан TELEGRAM_BOT_TOKEN!")
 
+    # Запускаем health server
     threading.Thread(target=start_health_server, daemon=True).start()
+
+    # ====== НОВОЕ: самопинг каждые 4 минуты ======
+    threading.Thread(target=self_ping_loop, daemon=True).start()
+    # =============================================
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
@@ -229,7 +245,6 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    # Кнопки меню обрабатываем РАНЬШЕ обычного текста
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.Regex("^(" + "|".join(MENU_BUTTON_TEXTS) + ")"),
         handle_menu_button
