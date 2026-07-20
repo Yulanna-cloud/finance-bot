@@ -1,5 +1,7 @@
 """
-Финансовый Telegram-бот для Юланны
+Финансовый Telegram-бот для Юланны — режим WEBHOOK
+При webhook Telegram сам доставляет сообщения на наш URL,
+бот не засыпает и ничего не теряется.
 """
 import os
 import logging
@@ -7,7 +9,7 @@ import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import time as datetime_time
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
@@ -33,7 +35,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
 
 MIN_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton("☰ Меню")]],
@@ -122,7 +123,9 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Готово! Поправил {n} записей — теперь всё по полочкам 📂")
 
 
-MENU_BUTTON_TEXTS = ["☰ Меню", "✖️ Закрыть", "📊 Отчёт", "📅 Итоги", "🧠 Анализ", "📋 Планирование", "💼 Бюджет", "🔍 Расшифровать", "🗑 Удалить", "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
+MENU_BUTTON_TEXTS = ["☰ Меню", "✖️ Закрыть", "📊 Отчёт", "📅 Итоги", "🧠 Анализ",
+                     "📋 Планирование", "💼 Бюджет", "🔍 Расшифровать", "🗑 Удалить",
+                     "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
 
 
 async def monthly_reminder(context):
@@ -172,52 +175,14 @@ async def post_init(app):
         )
 
 
-class _HealthHandler(BaseHTTPRequestHandler):
-    """Отвечает 200 OK — не даёт Render усыплять сервис."""
-
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-    def log_message(self, format, *args):
-        pass
-
-
-def start_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), _HealthHandler).serve_forever()
-
-
-def self_ping_loop():
-    """
-    Пингует сам себя каждые 4 минуты.
-    Render усыпляет сервис после 15 минут без HTTP-запросов —
-    самопинг не даёт этому случиться даже если UptimeRobot временно недоступен.
-    """
-    import time
-    port = int(os.environ.get("PORT", 8080))
-    url = f"http://localhost:{port}/"
-    time.sleep(30)  # ждём пока health server запустится
-    while True:
-        try:
-            urllib.request.urlopen(url, timeout=5)
-        except Exception:
-            pass
-        time.sleep(240)  # 4 минуты
-
-
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("Не задан TELEGRAM_BOT_TOKEN!")
 
-    # Запускаем health server
-    threading.Thread(target=start_health_server, daemon=True).start()
-
-    # ====== НОВОЕ: самопинг каждые 4 минуты ======
-    threading.Thread(target=self_ping_loop, daemon=True).start()
-    # =============================================
+    # URL вашего бота на Render
+    webhook_url = os.environ.get("WEBHOOK_URL", "https://finance-bot-rumu.onrender.com")
+    port = int(os.environ.get("PORT", 8080))
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
@@ -251,8 +216,15 @@ def main():
     ))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    logger.info("Бот запущен!")
-    app.run_polling(drop_pending_updates=True)
+    logger.info(f"Бот запущен на webhook: {webhook_url}")
+
+    # Запускаем в режиме webhook
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        webhook_url=webhook_url,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
