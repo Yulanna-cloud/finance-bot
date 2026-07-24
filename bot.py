@@ -225,6 +225,7 @@ def main():
     app.add_handler(CommandHandler("edit", handle_edit))
     app.add_handler(CommandHandler("budget", handle_budget))
     app.add_handler(CommandHandler("plan", handle_plan))
+    app.add_handler(CommandHandler("balans", handle_balans))
 
     app.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
     app.add_handler(CallbackQueryHandler(handle_edit_callback, pattern="^edit_"))
