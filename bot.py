@@ -1,7 +1,5 @@
 """
-Финансовый Telegram-бот для Юланны — режим WEBHOOK
-При webhook Telegram сам доставляет сообщения на наш URL,
-бот не засыпает и ничего не теряется.
+Финансовый Telegram-бот для Юланны — режим POLLING + самопинг
 """
 import os
 import logging
@@ -175,14 +173,42 @@ async def post_init(app):
         )
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass
+
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    HTTPServer(("0.0.0.0", port), _HealthHandler).serve_forever()
+
+
+def self_ping_loop():
+    """Пингует себя каждые 4 минуты — Render не засыпает."""
+    import time
+    port = int(os.environ.get("PORT", 8080))
+    url = f"http://localhost:{port}/"
+    time.sleep(30)
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=5)
+        except Exception:
+            pass
+        time.sleep(240)
+
+
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("Не задан TELEGRAM_BOT_TOKEN!")
 
-    # URL вашего бота на Render
-    webhook_url = os.environ.get("WEBHOOK_URL", "https://finance-bot-rumu.onrender.com")
-    port = int(os.environ.get("PORT", 8080))
+    threading.Thread(target=start_health_server, daemon=True).start()
+    threading.Thread(target=self_ping_loop, daemon=True).start()
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
@@ -216,15 +242,8 @@ def main():
     ))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    logger.info(f"Бот запущен на webhook: {webhook_url}")
-
-    # Запускаем в режиме webhook
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        webhook_url=webhook_url,
-        drop_pending_updates=True,
-    )
+    logger.info("Бот запущен!")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
