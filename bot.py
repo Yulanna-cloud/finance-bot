@@ -17,7 +17,7 @@ from handlers.voice_handler import handle_voice
 from handlers.photo_handler import handle_photo, handle_receipt_callback
 from services.sheets_service import fix_categories_in_sheet
 from handlers.file_handler import handle_file
-from handlers.report_handler import handle_report, handle_report_callback
+from handlers.report_handler import handle_report, handle_report_callback, handle_balans
 from handlers.archive_handler import handle_archive, handle_smart_query
 from handlers.year_handler import handle_year, handle_analiz
 from handlers.edit_handler import handle_edit, handle_edit_callback, handle_edit_text
