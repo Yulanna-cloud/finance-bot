@@ -5,7 +5,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from services.sheets_service import get_monthly_report, get_year_summary, now_ufa, MONTH_NAMES_RU
+from services.sheets_service import get_monthly_report, get_year_summary, now_ufa, MONTH_NAMES_RU, get_sheets_client, SPREADSHEET_ID
 from services.report_image import render_report_image
 
 logger = logging.getLogger(__name__)
@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 
 def _build_category_lines(all_cats: dict, expenses: float,
                           transfers_detail: dict, clothing_detail: dict) -> list:
-    """Текстовая разбивка по категориям — используется как запасной вариант,
-    если картинку отрисовать не удалось."""
     lines = ["📂 *Расходы по категориям:*\n"]
     GROUPS = [
         ("🏠 Жильё и платежи",  ["Ипотека", "ипотека", "Коммуналка", "Интернет", "Связь", "Страховка", "Жилье"]),
@@ -64,22 +62,17 @@ def _build_category_lines(all_cats: dict, expenses: float,
 
 
 def build_report_keyboard() -> InlineKeyboardMarkup:
-    """Строит клавиатуру выбора периода."""
     now = now_ufa()
-
     cur_month = now.month
     cur_year = now.year
-
     if now.month == 1:
         prev_month = 12
         prev_year = cur_year - 1
     else:
         prev_month = cur_month - 1
         prev_year = cur_year
-
     cur_name = MONTH_NAMES_RU[cur_month]
     prev_name = MONTH_NAMES_RU[prev_month]
-
     keyboard = [
         [InlineKeyboardButton(
             f"📅 {cur_name} {cur_year} (текущий)",
@@ -98,23 +91,19 @@ def build_report_keyboard() -> InlineKeyboardMarkup:
 
 
 def build_month_keyboard(year: int) -> InlineKeyboardMarkup:
-    """Строит клавиатуру выбора месяца."""
     now = now_ufa()
     buttons = []
     row = []
     for m in range(1, 13):
-        # Не показываем будущие месяцы
         if year == now.year and m > now.month:
             continue
-        name = MONTH_NAMES_RU[m][:3]  # Сокр. название: Янв, Фев...
+        name = MONTH_NAMES_RU[m][:3]
         row.append(InlineKeyboardButton(name, callback_data=f"report_{m}_{year}"))
         if len(row) == 4:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-
-    # Кнопки переключения года
     nav = []
     if year > now.year - 2:
         nav.append(InlineKeyboardButton("◀ " + str(year - 1), callback_data=f"report_year_{year - 1}"))
@@ -122,12 +111,10 @@ def build_month_keyboard(year: int) -> InlineKeyboardMarkup:
     if year < now.year:
         nav.append(InlineKeyboardButton(str(year + 1) + " ▶", callback_data=f"report_year_{year + 1}"))
     buttons.append(nav)
-
     return InlineKeyboardMarkup(buttons)
 
 
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню выбора периода."""
     await update.message.reply_text(
         "📊 За какой период показать отчёт?",
         reply_markup=build_report_keyboard()
@@ -135,12 +122,10 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатия кнопок отчёта."""
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    # Выбор года для детального меню
     if data.startswith("report_year_"):
         year = int(data.replace("report_year_", ""))
         await query.edit_message_text(
@@ -149,7 +134,6 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    # Открыть выбор месяца
     if data == "report_pick":
         now = now_ufa()
         await query.edit_message_text(
@@ -158,12 +142,10 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    # Отмена
     if data == "report_cancel":
         await query.edit_message_text("Отменено.")
         return
 
-    # Конкретный месяц: report_5_2026
     if data.startswith("report_"):
         parts = data.split("_")
         if len(parts) == 3:
@@ -176,7 +158,6 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def _send_report(query, target_month: int, target_year: int):
-    """Получает данные и отправляет отчёт."""
     try:
         now = now_ufa()
         report = get_monthly_report(month=target_month, year=target_year)
@@ -198,7 +179,6 @@ async def _send_report(query, target_month: int, target_year: int):
         balance_emoji = "✅" if balance >= 0 else "🔴"
         balance_sign = "+" if balance >= 0 else ""
 
-        # Данные прошлого месяца — для сравнения (в картинке и в тексте)
         prev_m = target_month - 1 if target_month > 1 else 12
         prev_y = target_year if target_month > 1 else target_year - 1
         prev = get_monthly_report(month=prev_m, year=prev_y)
@@ -206,7 +186,6 @@ async def _send_report(query, target_month: int, target_year: int):
         prev_expenses = prev["расходы"] if prev_ok else None
         prev_name = MONTH_NAMES_RU[prev_m]
 
-        # Короткий итог (без длинного списка категорий — он теперь в картинке)
         summary = [
             f"📊 *Отчёт за {month} {year}*\n",
             f"💰 Доходы: *{income:,.0f} ₽*",
@@ -217,12 +196,10 @@ async def _send_report(query, target_month: int, target_year: int):
             summary.append("🗄 _из архива (сводка по категориям)_")
         else:
             summary.append(f"🔢 Операций: {count}")
-        # Прогноз — только для текущего месяца
         if target_month == now.month and target_year == now.year and expenses > 0 and count > 0:
             daily_avg = expenses / now.day if now.day > 0 else 0
             summary.append(f"\n🔮 *Прогноз на месяц:* {daily_avg * 30:,.0f} ₽ _(≈{daily_avg:,.0f} ₽/день)_")
 
-        # Пытаемся отрисовать картинку с категориями
         image = None
         if all_cats:
             image = render_report_image(
@@ -231,12 +208,10 @@ async def _send_report(query, target_month: int, target_year: int):
             )
 
         if image is not None:
-            # Картинка удалась: короткий текст + изображение отдельным сообщением
             await query.edit_message_text("\n".join(summary), parse_mode="Markdown")
             await query.message.reply_photo(photo=image)
             return
 
-        # Запасной вариант — старый текстовый отчёт целиком
         lines = summary[:]
         lines.append("")
         if all_cats:
@@ -258,3 +233,123 @@ async def _send_report(query, target_month: int, target_year: int):
     except Exception as e:
         logger.error(f"Ошибка _send_report: {e}", exc_info=True)
         await query.edit_message_text("❌ Не удалось сформировать отчёт.")
+
+
+# ====== НОВОЕ: команда /balans ======
+
+def get_total_balance() -> dict:
+    """
+    Считает реальный баланс за всё время:
+    сумма всех доходов минус сумма всех расходов из архива + текущий месяц.
+    """
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+
+        total_income = 0.0
+        total_expense = 0.0
+        months_count = 0
+
+        # Читаем архив
+        try:
+            archive_sheet = spreadsheet.worksheet("АРХИВ")
+            archive_rows = archive_sheet.get_all_values()
+            if len(archive_rows) > 1:
+                headers = [h.strip().lower() for h in archive_rows[0]]
+                def col(names, default):
+                    for n in names:
+                        for i, h in enumerate(headers):
+                            if n in h:
+                                return i
+                    return default
+                ic_type = col(["тип"], 4)
+                ic_sum  = col(["сумма"], 5)
+                ic_period = col(["период", "месяц"], 2)
+
+                seen_periods = set()
+                for row in archive_rows[1:]:
+                    period = row[ic_period].strip() if ic_period < len(row) else ""
+                    if period:
+                        seen_periods.add(period)
+                    try:
+                        amount = float(
+                            row[ic_sum].replace(" ", "").replace("\xa0", "").replace(",", ".")
+                        ) if ic_sum < len(row) else 0
+                    except (ValueError, TypeError):
+                        continue
+                    if amount <= 0:
+                        continue
+                    row_type = row[ic_type].strip().lower() if ic_type < len(row) else ""
+                    if row_type == "доход":
+                        total_income += amount
+                    else:
+                        total_expense += amount
+                months_count = len(seen_periods)
+        except Exception as e:
+            logger.warning(f"Архив недоступен: {e}")
+
+        # Читаем текущий месяц
+        now = now_ufa()
+        current = get_monthly_report(month=now.month, year=now.year)
+        if "ошибка" not in current:
+            total_income += current.get("доходы", 0)
+            total_expense += current.get("расходы", 0)
+            if current.get("количество", 0) > 0:
+                months_count += 1
+
+        balance = total_income - total_expense
+
+        return {
+            "баланс": balance,
+            "доходы_всего": total_income,
+            "расходы_всего": total_expense,
+            "месяцев": months_count,
+            "текущий_месяц": MONTH_NAMES_RU[now.month],
+            "текущий_год": now.year,
+        }
+
+    except Exception as e:
+        logger.error(f"Ошибка get_total_balance: {e}")
+        return {"ошибка": str(e)}
+
+
+async def handle_balans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /balans — показывает реальный баланс за всё время."""
+    await update.message.reply_text("💳 Считаю реальный баланс...")
+    try:
+        result = get_total_balance()
+
+        if "ошибка" in result:
+            await update.message.reply_text(f"❌ Ошибка: {result['ошибка']}")
+            return
+
+        balance = result["баланс"]
+        income = result["доходы_всего"]
+        expense = result["расходы_всего"]
+        months = result["месяцев"]
+        cur_month = result["текущий_месяц"]
+        cur_year = result["текущий_год"]
+
+        balance_emoji = "✅" if balance >= 0 else "🔴"
+        balance_sign = "+" if balance >= 0 else ""
+
+        lines = [
+            f"💳 *Реальный баланс на {cur_month} {cur_year}*\n",
+            f"💰 Всего доходов: *{income:,.0f} ₽*",
+            f"💸 Всего расходов: *{expense:,.0f} ₽*",
+            f"{balance_emoji} *Остаток: {balance_sign}{balance:,.0f} ₽*",
+            f"\n🗓 Учтено месяцев: {months}",
+            f"\n_Включает архив + {cur_month} {cur_year}_",
+        ]
+
+        if balance < 0:
+            lines.append("\n⚠️ _Расходы превышают доходы. Возможно, не все доходы внесены._")
+            lines.append("_Запишите начальный баланс: напишите боту «начальный баланс 50000»_")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Ошибка handle_balans: {e}")
+        await update.message.reply_text("❌ Не удалось посчитать баланс.")
+
+# ====================================
