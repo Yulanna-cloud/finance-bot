@@ -47,7 +47,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton("📋 Планирование"),     KeyboardButton("💼 Бюджет")],
         [KeyboardButton("🗑 Удалить запись"),  KeyboardButton("📁 Архив")],
         [KeyboardButton("✏️ Изменить запись"), KeyboardButton("↩️ Восстановить")],
-        [KeyboardButton("❓ Помощь"),           KeyboardButton("✖️ Закрыть меню")],
+        [KeyboardButton("💳 Мой баланс"),      KeyboardButton("❓ Помощь")],
+        [KeyboardButton("✖️ Закрыть меню")],
     ],
     resize_keyboard=True,
     is_persistent=False,
@@ -104,6 +105,8 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await handle_restore(update, context)
     elif "Архив" in text:
         await handle_archive(update, context)
+    elif "Мой баланс" in text:
+        await handle_balans(update, context)
     elif "Помощь" in text:
         await help_command(update, context)
 
@@ -123,7 +126,8 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 MENU_BUTTON_TEXTS = ["☰ Меню", "✖️ Закрыть", "📊 Отчёт", "📅 Итоги", "🧠 Анализ",
                      "📋 Планирование", "💼 Бюджет", "🔍 Расшифровать", "🗑 Удалить",
-                     "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь"]
+                     "✏️ Изменить", "↩️ Восстановить", "📁 Архив", "❓ Помощь",
+                     "💳 Мой баланс"]
 
 
 async def monthly_reminder(context):
@@ -153,6 +157,7 @@ async def post_init(app):
         BotCommand("plan",    "📋 Планирование бюджета на месяц"),
         BotCommand("fix",     "🔧 Исправить категории в таблице"),
         BotCommand("pomosh",  "❓ Помощь"),
+        BotCommand("balans",  "💳 Реальный баланс за всё время"),
     ])
 
     chat_id = os.environ.get("OWNER_CHAT_ID")
