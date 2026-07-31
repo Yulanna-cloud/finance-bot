@@ -1,5 +1,5 @@
 """
-Финансовый Telegram-бот для Юланны — режим POLLING + самопинг
+Финансовый Telegram-бот для Юланны — режим POLLING + защита от чужих
 """
 import os
 import logging
@@ -34,6 +34,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ====== ЗАЩИТА: только ваш Telegram ID ======
+OWNER_ID = 935527543
+# ============================================
+
 MIN_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton("☰ Меню")]],
     resize_keyboard=True,
@@ -53,6 +57,17 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True,
     is_persistent=False,
 )
+
+
+def owner_only(func):
+    """Декоратор — пропускает только сообщения от владельца."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id if update.effective_user else None
+        if user_id != OWNER_ID:
+            logger.warning(f"Заблокировано сообщение от чужого ID: {user_id}")
+            return
+        return await func(update, context)
+    return wrapper
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,7 +209,6 @@ def start_health_server():
 
 
 def self_ping_loop():
-    """Пингует себя каждые 4 минуты — Render не засыпает."""
     import time
     port = int(os.environ.get("PORT", 8080))
     url = f"http://localhost:{port}/"
@@ -217,38 +231,42 @@ def main():
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("pomosh", help_command))
-    app.add_handler(CommandHandler("otchet", handle_report))
-    app.add_handler(CommandHandler("archive", handle_archive))
-    app.add_handler(CommandHandler("delete", handle_delete))
-    app.add_handler(CommandHandler("restore", handle_restore))
-    app.add_handler(CommandHandler("fix", fix_command))
-    app.add_handler(CommandHandler("year", handle_year))
-    app.add_handler(CommandHandler("analiz", handle_analiz))
-    app.add_handler(CommandHandler("edit", handle_edit))
-    app.add_handler(CommandHandler("budget", handle_budget))
-    app.add_handler(CommandHandler("plan", handle_plan))
-    app.add_handler(CommandHandler("balans", handle_balans))
+    # Фильтр — только сообщения от владельца
+    owner_filter = filters.User(user_id=OWNER_ID)
+
+    app.add_handler(CommandHandler("start",   start,          filters=owner_filter))
+    app.add_handler(CommandHandler("help",    help_command,   filters=owner_filter))
+    app.add_handler(CommandHandler("pomosh",  help_command,   filters=owner_filter))
+    app.add_handler(CommandHandler("otchet",  handle_report,  filters=owner_filter))
+    app.add_handler(CommandHandler("archive", handle_archive, filters=owner_filter))
+    app.add_handler(CommandHandler("delete",  handle_delete,  filters=owner_filter))
+    app.add_handler(CommandHandler("restore", handle_restore, filters=owner_filter))
+    app.add_handler(CommandHandler("fix",     fix_command,    filters=owner_filter))
+    app.add_handler(CommandHandler("year",    handle_year,    filters=owner_filter))
+    app.add_handler(CommandHandler("analiz",  handle_analiz,  filters=owner_filter))
+    app.add_handler(CommandHandler("edit",    handle_edit,    filters=owner_filter))
+    app.add_handler(CommandHandler("budget",  handle_budget,  filters=owner_filter))
+    app.add_handler(CommandHandler("plan",    handle_plan,    filters=owner_filter))
+    app.add_handler(CommandHandler("balans",  handle_balans,  filters=owner_filter))
 
     app.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
-    app.add_handler(CallbackQueryHandler(handle_edit_callback, pattern="^edit_"))
-    app.add_handler(CallbackQueryHandler(handle_plan_callback, pattern="^plan"))
-    app.add_handler(CallbackQueryHandler(handle_report_callback, pattern="^report_"))
-    app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern="^del_"))
+    app.add_handler(CallbackQueryHandler(handle_edit_callback,    pattern="^edit_"))
+    app.add_handler(CallbackQueryHandler(handle_plan_callback,    pattern="^plan"))
+    app.add_handler(CallbackQueryHandler(handle_report_callback,  pattern="^report_"))
+    app.add_handler(CallbackQueryHandler(handle_delete_callback,  pattern="^del_"))
     app.add_handler(CallbackQueryHandler(handle_restore_callback, pattern="^restore_"))
 
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.VOICE & owner_filter, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO & owner_filter, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL & owner_filter, handle_file))
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Regex("^(" + "|".join(MENU_BUTTON_TEXTS) + ")"),
+        filters.TEXT & ~filters.COMMAND & owner_filter &
+        filters.Regex("^(" + "|".join(MENU_BUTTON_TEXTS) + ")"),
         handle_menu_button
     ))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & owner_filter, handle_text))
 
-    logger.info("Бот запущен!")
+    logger.info("Бот запущен! Защита включена — только owner ID: " + str(OWNER_ID))
     app.run_polling(drop_pending_updates=True)
 
 
